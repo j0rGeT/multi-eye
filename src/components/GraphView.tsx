@@ -13,10 +13,11 @@
  *     否则用户每点一个节点，整张图就会重新飞舞一次
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import cytoscape, { type Core, type ElementDefinition } from "cytoscape";
 import fcose from "cytoscape-fcose";
 import type { GraphModel, GraphNode } from "@/core/types";
+import { clusterColor, clusterIndexMap } from "@/core/graph/palette";
 
 let fcoseRegistered = false;
 function ensureFcose() {
@@ -24,17 +25,6 @@ function ensureFcose() {
   cytoscape.use(fcose);
   fcoseRegistered = true;
 }
-
-/**
- * 簇配色。
- *
- * 挑的是暗底上区分度足够、且对色盲相对友好的一组。数量多于配色数时循环取用 ——
- * 超过 12 个簇的图本来就超出了「一眼看懂」的极限，配色重复不是主要矛盾。
- */
-const CLUSTER_COLORS = [
-  "#58a6ff", "#3fb950", "#d29922", "#bc8cff", "#f85149", "#39c5cf",
-  "#ff7b72", "#7ee787", "#e3b341", "#a5a5ff", "#56d4dd", "#ffa657",
-];
 
 export interface GraphViewProps {
   graph: GraphModel;
@@ -76,9 +66,7 @@ export default function GraphView({
    * 下面的 effect 会误判成「数据变了」而反复重跑布局。
    */
   const elements = useMemo<ElementDefinition[]>(() => {
-    const clusterIndex = new Map(
-      graph.clusters.map((c, i) => [c.id, i] as const),
-    );
+    const clusterIndex = clusterIndexMap(graph.clusters);
 
     const nodes: ElementDefinition[] = graph.nodes
       .filter((n) => showDocuments || n.kind !== "document")
@@ -92,7 +80,7 @@ export default function GraphView({
             weight: n.weight,
             degree: n.degree,
             clusterId: n.clusterId,
-            color: CLUSTER_COLORS[ci % CLUSTER_COLORS.length],
+            color: clusterColor(ci),
           },
         };
       });
@@ -143,14 +131,24 @@ export default function GraphView({
           },
         },
         {
-          // 文档节点用方形、弱化配色，视觉上与概念区分开。
-          // 形状走选择器而不是 data 映射：Cytoscape 的 shape 不支持 mapper，
-          // 写 shape: "data(shape)" 会被静默忽略，所有节点都变回圆形。
+          /**
+           * 文档节点：方形 + 中性灰，不跟随簇配色。
+           *
+           * 本来是按所属簇上色的，但那会传达一个错误信息：这份语料的 60 个
+           * 概念里有 40 个落在同一个簇，于是 43 篇资料里 38 篇被判给它 ——
+           * 几乎所有资料节点同色，看着像配色坏了，实际上「资料属于某个簇」
+           * 这个设定本身就不成立。资料的归属是「跟哪个方向更相关」，
+           * 那是个连续量，不是分类。
+           *
+           * 形状走选择器而不是 data 映射：Cytoscape 的 shape 不支持 mapper，
+           * 写 shape: "data(shape)" 会被静默忽略，所有节点都变回圆形。
+           */
           selector: 'node[kind = "document"]',
           style: {
             shape: "round-rectangle",
-            "background-opacity": 0.35,
-            "border-color": "data(color)",
+            "background-color": "#484f58",
+            "background-opacity": 0.5,
+            "border-color": "#6e7681",
             "font-size": 7,
             color: "#8b949e",
           },
@@ -288,9 +286,60 @@ export default function GraphView({
   }, [selectedId]);
 
   return (
-    <div
-      ref={containerRef}
-      style={{ width: "100%", height: "100%", minHeight: 420 }}
-    />
+    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+      <div
+        ref={containerRef}
+        style={{ width: "100%", height: "100%", minHeight: 420 }}
+      />
+
+      {/*
+        图例。簇的颜色和标签在导出的 Markdown 报告里也用同一套，
+        两处对得上，报告里的图和界面里的图才像是同一个东西。
+      */}
+      {graph.clusters.length > 1 && (
+        <div
+          style={{
+            position: "absolute",
+            left: 10,
+            bottom: 10,
+            display: "flex",
+            flexDirection: "column",
+            gap: 3,
+            padding: "8px 10px",
+            background: "rgba(13, 17, 23, 0.85)",
+            border: "1px solid var(--border-subtle)",
+            borderRadius: 6,
+            pointerEvents: "none",
+            maxWidth: 240,
+          }}
+        >
+          {graph.clusters.map((c, i) => (
+            <div
+              key={c.id}
+              style={{ display: "flex", alignItems: "center", gap: 6 }}
+            >
+              <span
+                className="dot"
+                style={{ background: clusterColor(i) }}
+              />
+              <span
+                style={{
+                  fontSize: 11,
+                  color: "var(--fg-muted)",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {c.label}
+              </span>
+              <span className="dim" style={{ fontSize: 10 }}>
+                {c.size}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

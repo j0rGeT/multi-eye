@@ -11,6 +11,14 @@ interface GraphBody {
   sessionId?: string;
   /** "heuristic" | "llm"，省略则按是否配了 API key 自动选。 */
   force?: "heuristic" | "llm";
+  /**
+   * Louvain 分辨率，调高会切出更多、更小的主题簇。
+   *
+   * 开放成请求参数而不是写死在代码里：合适的粒度取决于语料 ——
+   * 一个宽泛主题（"露营"）和一个具体主题（"某款帐篷的搭建方式"）需要的粒度
+   * 完全不同，而判据是主观的「这簇读起来是不是一个主题」，只能由人调。
+   */
+  resolution?: number;
 }
 
 /**
@@ -23,6 +31,17 @@ interface GraphBody {
  * 前置条件：会话里必须有已抓取的正文。只有搜索结果（摘要）也能构图，但
  * 摘要太短，TF-IDF 会退化成按标题匹配。所以这里明确提示用户先去抓取。
  */
+/**
+ * 分辨率夹在合理区间内。
+ *
+ * 0.1 会退化成「所有词一簇」，10 以上会碎成几十个只有一两个词的簇 ——
+ * 两者都不报错，只是产出一张没用的图，所以在这里挡住比事后排查划算。
+ */
+function clampResolution(v: number | undefined): number | undefined {
+  if (v === undefined || !Number.isFinite(v)) return undefined;
+  return Math.min(4, Math.max(0.4, v));
+}
+
 export async function POST(req: NextRequest) {
   let body: GraphBody;
   try {
@@ -70,6 +89,7 @@ export async function POST(req: NextRequest) {
     const graph = await buildGraph(session.topic, usable, {
       signal: req.signal,
       force: body.force,
+      resolution: clampResolution(body.resolution),
     });
 
     await saveSession({

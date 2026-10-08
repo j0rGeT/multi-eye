@@ -16,6 +16,11 @@ export interface BuildOptions {
   signal?: AbortSignal;
   /** 强制指定路径，用于对比两条路径的效果。 */
   force?: "heuristic" | "llm";
+  /**
+   * Louvain 分辨率。省略则用 heuristic 的默认值。
+   * 语料越杂、越需要切细，就调得越高。
+   */
+  resolution?: number;
 }
 
 export async function buildGraph(
@@ -31,7 +36,10 @@ export async function buildGraph(
     return await fallback(topic, docs, opts, "LLM 构图路径尚未接入");
   }
 
-  return buildHeuristicGraph(topic, docs, { signal: opts.signal });
+  return buildHeuristicGraph(topic, docs, {
+    signal: opts.signal,
+    resolution: opts.resolution,
+  });
 }
 
 async function fallback(
@@ -40,7 +48,10 @@ async function fallback(
   opts: BuildOptions,
   reason: string,
 ): Promise<GraphModel> {
-  const graph = await buildHeuristicGraph(topic, docs, { signal: opts.signal });
+  const graph = await buildHeuristicGraph(topic, docs, {
+    signal: opts.signal,
+    resolution: opts.resolution,
+  });
   // 把降级原因写进 stats，让前端能如实告诉用户「为什么没走上 LLM」，
   // 而不是默默给出一张统计图让人以为模型没生效
   return {

@@ -26,6 +26,8 @@ import { detectCommunities } from "./communities";
 export interface HeuristicOptions {
   signal?: AbortSignal;
   maxKeywords?: number;
+  /** Louvain 分辨率，省略则用 communities.ts 的默认值。 */
+  resolution?: number;
 }
 
 /**
@@ -113,7 +115,11 @@ export async function buildHeuristicGraph(
 
   // ── 5. 社区发现（只在关键词上跑，文档节点不参与分簇） ──
   const nodeWeights = new Map(keywords.map((w) => [w, tfidf.weight.get(w) ?? 1]));
-  const communities = detectCommunities({ nodes: nodeWeights, edges });
+  const communities = detectCommunities({
+    nodes: nodeWeights,
+    edges,
+    resolution: opts.resolution,
+  });
 
   // ── 6. 组装 GraphModel ──
   return assemble({

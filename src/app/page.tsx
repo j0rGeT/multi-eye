@@ -226,6 +226,22 @@ export default function Home() {
 
         <div style={{ flex: 1 }} />
 
+        {/*
+          导出用普通链接而不是 fetch + Blob：路由已经带了
+          Content-Disposition，浏览器认这个头就会走下载，不需要前端再把
+          几十 KB 的文本绕一圈内存。也顺带保住了「在新标签页打开」的退路。
+        */}
+        {sessionId && results.length > 0 && (
+          <a
+            className="btn"
+            href={`/api/export?sessionId=${encodeURIComponent(sessionId)}`}
+            style={{ textDecoration: "none", fontSize: 13 }}
+            title="导出为 Markdown 报告，同时落盘到 data/sessions/<id>/report.md"
+          >
+            导出报告
+          </a>
+        )}
+
         {graph && (
           <label
             className="badge"
