@@ -26,3 +26,10 @@ searxng/settings.yml
 
 # 下载中断残留
 *.part
+
+# yt-dlp 单文件二进制（37MB，放本地即可；用 pnpm ytdlp:fetch 拉取）
+bin/yt-dlp
+bin/yt-dlp_*
+
+# 离线测试装置与临时构建产物
+.graphcheck/

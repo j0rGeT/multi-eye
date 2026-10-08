@@ -21,12 +21,18 @@ const execFileAsync = promisify(execFile);
  * 落在 ~/.local/bin，这个目录在交互式 shell 里通常已入 PATH，但从 IDE 或
  * launchd 拉起的 dev server 继承不到，于是「终端里能跑、应用里说没装」。
  * 所以按已知位置逐个探测，全不命中再退回 "yt-dlp" 交给 PATH 决定。
+ *
+ * 顺序是有实测依据的：官方单文件二进制（bin/yt-dlp，PyInstaller onefile）
+ * 在本机每次启动要 ~23 秒 —— CPU 只占 3%，全程在等 I/O，而 uv/pip 装的
+ * 标准安装只要 0.1 秒。本项目对 yt-dlp 的调用是「一次搜索 + 每条视频一次
+ * 字幕」，23 秒的启动开销会让整条链直接不可用，所以单文件二进制只能垫底。
  */
 function findYtdlp(): string {
   const candidates = [
     join(homedir(), ".local", "bin", "yt-dlp"),
     "/opt/homebrew/bin/yt-dlp",
     "/usr/local/bin/yt-dlp",
+    join(process.cwd(), "bin", "yt-dlp"),
   ];
   return candidates.find((p) => existsSync(p)) ?? "yt-dlp";
 }
@@ -80,12 +86,18 @@ export function hasLLM(): boolean {
   return config.anthropicApiKey.length > 0;
 }
 
-/** yt-dlp 是否真的可执行。结果缓存，避免每次搜索都 fork 一个进程。 */
+/**
+ * yt-dlp 是否真的可执行。结果缓存，避免每次搜索都 fork 一个进程。
+ *
+ * 超时给到 30 秒而不是几秒：单文件二进制的启动开销可以到 23 秒（见 findYtdlp
+ * 的注释），用短超时会把一个能用的二进制判成「未安装」，而用户从报错里看不出
+ * 真正的原因。探测结果被缓存，所以这笔开销整个进程只付一次。
+ */
 let ytdlpProbe: Promise<boolean> | undefined;
 
 export function hasYtdlp(): Promise<boolean> {
   ytdlpProbe ??= execFileAsync(config.ytdlpPath, ["--version"], {
-    timeout: 5_000,
+    timeout: 30_000,
   })
     .then(() => true)
     .catch(() => false);

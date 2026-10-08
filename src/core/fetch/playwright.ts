@@ -8,8 +8,23 @@
  * 抓取，违反平台用户协议且有封号风险。要接的话只需改 getBrowser 这一处。
  */
 
+import { createRequire } from "node:module";
+import { join } from "node:path";
 import type { Browser } from "playwright";
 import { config } from "@/core/env";
+
+/**
+ * 用 createRequire 而不是 `await import("playwright")`。
+ *
+ * 打包器会静态分析 import() 里的字面量，遇到没安装的包就每次构建都吐一条
+ * "Module not found" 警告 —— 对一个刻意不装的可选依赖来说这是纯噪音，而且
+ * 会训练人忽略构建输出。require 对打包器不透明，警告消失，解析规则仍是标准的
+ * node_modules 向上查找，所以用户 `pnpm add playwright` 之后立刻就能生效。
+ *
+ * 锚定在 cwd 而非 import.meta.url：Next 会把服务端代码打进 .next/ 下的产物，
+ * 以产物位置为基准会找不到项目根目录的 node_modules。
+ */
+const requireFromRoot = createRequire(join(process.cwd(), "package.json"));
 
 let browserPromise: Promise<Browser | null> | undefined;
 
@@ -19,8 +34,7 @@ async function getBrowser(): Promise<Browser | null> {
 
   browserPromise ??= (async () => {
     try {
-      // 动态 import：没装 playwright 时整个模块仍可加载，只是这一级被跳过
-      const { chromium } = await import("playwright");
+      const { chromium } = requireFromRoot("playwright") as typeof import("playwright");
       // 浏览器同样要走代理：无头浏览器绕不过网络可达性，境外站点直连会超时。
       // 与 httpFetch 用同一个 config.fetchProxyUrl，两处行为保持一致。
       const proxy = config.fetchProxyUrl.trim();

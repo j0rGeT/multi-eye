@@ -14,7 +14,7 @@
 import type { Document, ExtractMethod, SearchResult } from "@/core/types";
 import { config } from "@/core/env";
 import { fetchHtml } from "./http";
-import { extractWithReadability, looksLikeSpa } from "./readability";
+import { extractWithReadability, looksLikeCode, looksLikeSpa } from "./readability";
 import { fetchWithBrowser, isPlaywrightAvailable } from "./playwright";
 import { fetchTranscript, isYoutubeUrl } from "./youtube";
 import { limiter } from "@/core/limit";
@@ -87,6 +87,19 @@ export async function extractOne(
   if (res.ok && res.body) {
     const extraction = extractWithReadability(res.body, res.finalUrl);
 
+    /**
+     * 第二道防线：即使剥掉了 script/style，仍可能有站点的内联 JSON 以普通
+     * 文本节点存在。这种「正文」一旦入库，TF-IDF 会把 window/var/function
+     * 这类词顶成核心概念。宁可让它退化为摘要，也不能污染语义图。
+     */
+    if (looksLikeCode(extraction.text)) {
+      return fallbackDocument(
+        result,
+        "正文疑似为脚本或内联数据，已丢弃",
+        t0,
+      );
+    }
+
     if (!extraction.thin) {
       return buildDoc(result, {
         method: "readability",
@@ -106,8 +119,13 @@ export async function extractOne(
     if (looksLikeSpa(res.body, extraction) && (await isPlaywrightAvailable())) {
       const br = await fetchWithBrowser(result.url, { signal });
       if (br.html) {
-        // 站点专用选择器命中时直接用，比再跑一次 Readability 准
-        if (br.selectorText && br.selectorText.length > 200) {
+        // 站点专用选择器命中时直接用，比再跑一次 Readability 准。
+        // 但仍要过一遍代码检测：选择器可能框到了一块内联 JSON。
+        if (
+          br.selectorText &&
+          br.selectorText.length > 200 &&
+          !looksLikeCode(br.selectorText)
+        ) {
           return buildDoc(result, {
             method: "playwright",
             text: br.selectorText,

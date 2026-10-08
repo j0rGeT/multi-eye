@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start -p 3000",
     "typecheck": "tsc --noEmit",
+    "ytdlp:fetch": "bash scripts/ytdlp-fetch.sh",
     "searxng:setup": "bash scripts/searxng-setup.sh",
     "searxng:up": "bash scripts/searxng.sh start",
     "searxng:down": "bash scripts/searxng.sh stop",
