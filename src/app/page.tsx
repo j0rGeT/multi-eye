@@ -11,7 +11,7 @@
  * 资料付抓取成本。
  */
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   Document,
   FetchEvent,
@@ -20,6 +20,7 @@ import type {
   ProviderLogEntry,
   SearchEvent,
   SearchResult,
+  Session,
   SiteKey,
 } from "@/core/types";
 import { postSse } from "@/components/postSse";
@@ -54,6 +55,50 @@ export default function Home() {
   const [showDocuments, setShowDocuments] = useState(true);
 
   const abortRef = useRef<AbortController | null>(null);
+  /** 本轮是否已经开始过搜索。用来防止「恢复上次会话」覆盖用户刚发起的新一轮。 */
+  const startedRef = useRef(false);
+
+  /**
+   * 挂载时把上一次的会话读回来。
+   *
+   * 会话 id 存在浏览器本地，而不是加到 URL 上：这是个人工具，地址栏保持干净
+   * 比可分享更重要。删掉这条记录就等于「下次从空白开始」。
+   *
+   * 恢复的价值主要在下载这一层 —— 任务在服务端自己跑，与这个标签页无关，
+   * 但页面状态只活在内存里，刷新一次就找不回那个任务的入口了。
+   */
+  useEffect(() => {
+    const last = localStorage.getItem(LAST_SESSION_KEY);
+    if (!last) return;
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const res = await fetch(`/api/session?id=${encodeURIComponent(last)}`);
+        if (!res.ok) {
+          localStorage.removeItem(LAST_SESSION_KEY);
+          return;
+        }
+        const { session } = (await res.json()) as { session: Session };
+        // 用户可能已经在这段时间里开始了新的一轮搜索，别把它盖掉
+        if (cancelled || startedRef.current) return;
+
+        setQuery(session.topic.query);
+        setSites(session.topic.sites);
+        setResults(session.results);
+        setDocuments(session.documents);
+        setLogs(session.providerLog);
+        setGraph(session.graph ?? null);
+        setSessionId(session.topic.id);
+      } catch {
+        // 读不回来就当没这回事，页面照常空白启动
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const toggleSite = useCallback((s: SiteKey) => {
     setSites((prev) =>
@@ -68,6 +113,7 @@ export default function Home() {
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
+    startedRef.current = true;
 
     setSearching(true);
     setSearchError(null);
@@ -93,6 +139,8 @@ export default function Home() {
               break;
             case "done":
               setSessionId(e.sessionId);
+              // 记住这一轮，刷新或重开页面时能接着用
+              localStorage.setItem(LAST_SESSION_KEY, e.sessionId);
               break;
             case "error":
               setSearchError(e.message);
@@ -399,3 +447,6 @@ function mergeResults(
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
+
+/** 上次用的会话 id。见挂载时那段恢复逻辑。 */
+const LAST_SESSION_KEY = "mutieye:lastSession";
