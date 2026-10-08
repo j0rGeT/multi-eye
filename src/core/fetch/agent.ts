@@ -18,6 +18,15 @@
 import { ProxyAgent, fetch as undiciFetch, type Dispatcher } from "undici";
 import { config } from "@/core/env";
 
+/**
+ * 建立代理隧道的最长等待。
+ *
+ * undici 默认 10 秒，对本地代理太紧：它得先自己连上目标站再回隧道，实测
+ * 约 5% 的图片请求会卡在握手超时（`Connect Timeout Error ... timeout: 10000ms`），
+ * 而同一个 URL 紧接着重试就成功。给足余量比让用户看到「下载失败」划算。
+ */
+const CONNECT_TIMEOUT_MS = 30_000;
+
 let agent: Dispatcher | undefined;
 let agentForUrl = "";
 
@@ -29,10 +38,34 @@ export function proxyAgent(): Dispatcher | undefined {
   // 地址变了就换一个 agent，避免配置热更新后继续走旧代理
   if (!agent || agentForUrl !== url) {
     void agent?.close().catch(() => {});
-    agent = new ProxyAgent(url);
+    agent = new ProxyAgent({ uri: url, connectTimeout: CONNECT_TIMEOUT_MS });
     agentForUrl = url;
   }
   return agent;
+}
+
+/**
+ * 把网络层的错误换成能读的那种。
+ *
+ * undici 在连接层面出错时只抛一句 `TypeError: fetch failed`，真正的原因
+ * （连接超时、DNS、TLS、代理拒绝）藏在 cause 里。不摊开的话，界面上、
+ * 任务的 error 字段里就只剩这四个字，完全没法排查。
+ */
+export function networkErrorText(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+
+  const causes: string[] = [];
+  let cause: unknown = err.cause;
+  // cause 也可能自带 cause（如 "fetch failed" → ConnectTimeoutError）
+  for (let depth = 0; cause && depth < 3; depth++) {
+    if (!(cause instanceof Error)) {
+      causes.push(String(cause));
+      break;
+    }
+    causes.push(cause.message);
+    cause = cause.cause;
+  }
+  return causes.length > 0 ? `${err.message}（${causes.join(" → ")}）` : err.message;
 }
 
 /**
@@ -50,9 +83,23 @@ export const httpFetch: typeof globalThis.fetch = (async (
   // 所以先构造对象再补字段，避免直接展开一个不兼容的类型。
   const merged: RequestInit & { dispatcher?: Dispatcher } = { ...(init ?? {}) };
   if (dispatcher) merged.dispatcher = dispatcher;
-  const res = await undiciFetch(input as never, merged as never);
-  return res as unknown as Response;
+  try {
+    const res = await undiciFetch(input as never, merged as never);
+    return res as unknown as Response;
+  } catch (err) {
+    // abort 原样抛出：调用方靠 signal.aborted 和错误名区分「用户取消」和
+    // 「网络坏了」，包一层会把那个信号盖掉
+    if (isAbort(err)) throw err;
+    throw new Error(networkErrorText(err), { cause: err });
+  }
 }) as typeof globalThis.fetch;
+
+function isAbort(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    (err.name === "AbortError" || (err as { code?: string }).code === "ABORT_ERR")
+  );
+}
 
 /** 进程退出时释放连接池，避免 dev 热重载反复堆积 socket。 */
 export async function closeAgent(): Promise<void> {

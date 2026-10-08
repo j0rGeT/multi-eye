@@ -227,3 +227,111 @@ pre {
   text-align: center;
   color: var(--fg-dim);
 }
+
+/* ── 下载进度 ── */
+
+.bar {
+  position: relative;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+}
+.bar-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: var(--accent-dim);
+  transition: width 0.25s ease;
+}
+.bar-fill-err {
+  background: var(--err);
+  transition: none;
+}
+
+/* 总长未知（yt-dlp 还没报出总量、图片批量下载）时的滚动条纹 */
+.bar-indet {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  width: 40%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--accent-dim),
+    transparent
+  );
+  animation: indet 1.4s ease-in-out infinite;
+}
+@keyframes indet {
+  0% {
+    left: -40%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+.dot-ok {
+  background: var(--ok);
+}
+.dot-err {
+  background: var(--err);
+}
+.dot-dim {
+  background: var(--fg-dim);
+}
+
+.tasklist {
+  margin-top: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.taskrow {
+  display: flex;
+  gap: 7px;
+  align-items: flex-start;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 11px;
+}
+.taskrow:last-child {
+  border-bottom: none;
+}
+.taskrow .dot {
+  margin-top: 5px;
+}
+.taskrow-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.taskrow-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
+.taskrow-meta {
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.taskrow-bar {
+  position: relative;
+  display: block;
+  height: 3px;
+  margin-top: 2px;
+  border-radius: 2px;
+  background: var(--border-subtle);
+  overflow: hidden;
+}

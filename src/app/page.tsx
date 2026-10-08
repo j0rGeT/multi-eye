@@ -26,6 +26,7 @@ import { postSse } from "@/components/postSse";
 import SearchPanel from "@/components/SearchPanel";
 import GraphView from "@/components/GraphView";
 import NodeDetail from "@/components/NodeDetail";
+import DownloadPanel from "@/components/DownloadPanel";
 
 export default function Home() {
   const [query, setQuery] = useState("");
@@ -345,6 +346,17 @@ export default function Home() {
             )}
           </div>
         </div>
+
+        {/*
+          下载单独占一行而不是塞进某一栏：选项 + 按钮 + 逐条进度挤在 300px
+          的窄栏里读不了。它本来也是流程里独立的一步 —— 前面几步的产物都
+          已经留在页面上，用户可以只看不留。
+        */}
+        {sessionId && documents.length > 0 && (
+          <div style={{ marginTop: 16 }}>
+            <DownloadPanel sessionId={sessionId} documents={documents} />
+          </div>
+        )}
 
         {searchError && (
           <div

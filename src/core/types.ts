@@ -256,7 +256,18 @@ export interface DownloadJob {
 
 /** SSE 传输的信封。客户端据 type 分派。 */
 export type ProgressEvent =
-  | { type: "snapshot"; job: DownloadJob; at: string }
+  | {
+      type: "snapshot";
+      job: DownloadJob;
+      /**
+       * 这个任务是否还活在服务端进程里。
+       *
+       * 磁盘上的 tasks.json 会把一个被杀掉的任务永远停在 running，
+       * 只看状态字段没法区分「在跑」和「上次死了」。false 表示需要用户点继续。
+       */
+      live: boolean;
+      at: string;
+    }
   | { type: "task"; task: DownloadTask; at: string }
   | { type: "job"; job: DownloadJob; at: string }
   | { type: "error"; message: string; at: string };
