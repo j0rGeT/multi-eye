@@ -1,0 +1,25 @@
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: muti-eye-searxng
+    ports:
+      # 宿主机 8888 -> 容器 8080（避开常见的 8080 占用）
+      - "8888:8080"
+    volumes:
+      # 挂载配置目录：settings.yml 里的 search.formats 必须含 json，
+      # 否则 /search?format=json 一律返回 403，整个搜索层不可用。
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8888/
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"
+    restart: unless-stopped

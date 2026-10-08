@@ -1,0 +1,28 @@
+node_modules/
+.next/
+out/
+build/
+
+# SearXNG 源码与虚拟环境（由 scripts/searxng-setup.sh 生成，不入库）
+.searxng/
+.searxng-venv/
+.searxng.pid
+.searxng.log
+
+# 运行时产物：搜索会话、报告、下载的资料
+data/
+
+# 环境变量（含 API key）
+.env
+.env.local
+.env*.local
+
+# SearXNG 实例配置：含 server.secret_key，且密钥一旦进 git 历史就洗不掉。
+# 仓库里只保留 settings.yml.example 模板。
+searxng/settings.yml
+
+.DS_Store
+*.tsbuildinfo
+
+# 下载中断残留
+*.part
