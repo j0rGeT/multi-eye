@@ -209,9 +209,13 @@ export default function DownloadPanel({ sessionId, documents }: Props) {
         setJob(data.job);
 
         if (action === "pause" || action === "cancel") {
-          // 这两个动作之后不会再有事件，主动收流，免得连着等待心跳
-          setLive(false);
-          closeStream();
+          // 先就地改状态。服务端要等在跑的任务收手之后才推出最终状态，那是
+          // 几秒之后的事；这几秒里按钮该显示「已暂停」而不是「已中断」。
+          // 流不收：权威的终态由服务端的 job 事件推过来（paused/canceled 都
+          // 在我们的收流判据里，事件到了会自己关）。
+          const next = action === "pause" ? "paused" : "canceled";
+          setJob((prev) => (prev ? { ...prev, status: next } : prev));
+          if (!streamRef.current) setLive(false);
           return;
         }
         if (isSettled(data.job.status)) {
@@ -383,6 +387,13 @@ export default function DownloadPanel({ sessionId, documents }: Props) {
           </button>
         )}
       </div>
+
+      {/* 勾了类型却没有可下的东西。不解释的话，用户只会看到按钮是灰的 */}
+      {selectable === 0 && (
+        <p className="muted" style={{ fontSize: 11, margin: "8px 0 0" }}>
+          这批资料没有可下载的产物 —— 一篇都没抓到正文。回到上面重新抓取，或换一批资料。
+        </p>
+      )}
 
       {/* ── 总体进度 ── */}
       {job && (
