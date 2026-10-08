@@ -219,10 +219,12 @@ async function downloadImages(ctx: RunContext): Promise<number> {
   }
 
   if (done === 0) {
+    // 一张都没下来就不写标记：这个目录还不是一份可用的产物，重试时要重跑
     throw new Error(
       `全部 ${images.length} 张图片下载失败：${failed[0] ?? "未知原因"}`,
     );
   }
+  await writeDoneMarker(dir, { kind: "image", count: done, bytes });
   if (failed.length > 0) {
     // 不抛异常 —— 有成功的就交付。把失败明细留下，让用户自己判断要不要重试。
     ctx.onProgress(bytes, bytes);
@@ -238,6 +240,40 @@ async function downloadImages(ctx: RunContext): Promise<number> {
 
 /** 一篇资料最多下多少张图。图片是附属产物，不该让单个任务跑上几分钟。 */
 const MAX_IMAGES = 30;
+
+/**
+ * 停滞判定：每满一个 60 秒的窗口，若这段时间收到的字节少于 8 KB 就掐断。
+ *
+ * 为什么判据不是「多少秒没有收到任何字节」（undici 的 bodyTimeout 就是那个
+ * 语义）：那样对**涓流**无能为力 —— 每几十秒来几百字节的连接会不断重置计时。
+ * 实测有个图片任务以约 275 B/s 的速度爬了 38 分钟，进度条一直转却没有尽头。
+ * 所以判据落在吞吐上，而不是间隔上。
+ *
+ * 8 KB/60s（约 136 B/s）低于任何还能算「在下」的速度，不会误杀慢速但真实的
+ * 大文件。掐断后交给 withRetry 重试，已下载的部分由 .part 续传接上。
+ */
+const STALL_WINDOW_MS = 60_000;
+const STALL_MIN_BYTES = 8 * 1024;
+
+/**
+ * 目录型产物的完工标记（image / media）。
+ *
+ * 单文件产物用 .part 表达「下没下完」，目录型产物没有对应的东西：中断留下的是
+ * 一个「里面有文件的目录」，只按「有没有文件」判断的话，半截的批次会被当成
+ * 已完成 —— 续跑时直接跳过，用户以为下好了，其实少了一半图。
+ */
+export const DONE_MARKER = ".done";
+
+async function writeDoneMarker(
+  dir: string,
+  info: Record<string, number | string>,
+): Promise<void> {
+  await writeFile(
+    join(dir, DONE_MARKER),
+    JSON.stringify({ ...info, at: new Date().toISOString() }),
+    "utf8",
+  ).catch(() => {}); // 标记写不进去只影响续跑的判断，不该让已经下好的东西判失败
+}
 
 /**
  * 重试几次瞬时故障。
@@ -378,6 +414,7 @@ async function downloadMedia(ctx: RunContext): Promise<number> {
     }
   }
 
+  await writeDoneMarker(dir, { kind: "media", bytes });
   ctx.onProgress(bytes, bytes);
   return bytes;
 }
@@ -451,39 +488,77 @@ export async function downloadToFile(
     ...opts.headers,
   };
 
-  const res = await httpFetch(url, {
-    headers,
-    signal: opts.signal,
-    redirect: "follow",
-  });
+  // 本地控制器：既听外部的取消，也听下面的停滞看门狗。
+  // 直接透传 opts.signal 的话，看门狗就没法掐断请求 —— signal 只能由持有者
+  // abort。
+  const local = new AbortController();
+  const onOuterAbort = () => local.abort();
+  opts.signal?.addEventListener("abort", onOuterAbort, { once: true });
 
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  let windowStart = Date.now();
+  let windowBytes = 0;
+  const watchdog = setInterval(() => {
+    if (Date.now() - windowStart < STALL_WINDOW_MS) return;
+    if (windowBytes < STALL_MIN_BYTES) local.abort();
+    windowStart = Date.now();
+    windowBytes = 0;
+  }, 5_000);
 
-  const resumed = res.status === 206;
-  if (have > 0 && !resumed) {
-    have = 0;
-    await unlink(part).catch(() => {});
+  try {
+    const res = await httpFetch(url, {
+      headers,
+      signal: local.signal,
+      redirect: "follow",
+    });
+
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const resumed = res.status === 206;
+    if (have > 0 && !resumed) {
+      have = 0;
+      await unlink(part).catch(() => {});
+    }
+
+    const lenHeader = res.headers.get("content-length");
+    const total = lenHeader ? have + Number(lenHeader) : undefined;
+
+    if (!res.body) throw new Error("响应没有内容");
+
+    // 从收到响应头开始重新计窗。建连慢（代理握手）和传输慢是两回事，
+    // 前者已经由 connectTimeout 管，不该算进吞吐的账上。
+    windowStart = Date.now();
+    windowBytes = 0;
+
+    let written = have;
+    const stream = createWriteStream(part, { flags: resumed ? "a" : "w" });
+
+    const source = Readable.fromWeb(res.body as never);
+    source.on("data", (chunk: Buffer) => {
+      written += chunk.length;
+      windowBytes += chunk.length;
+      opts.onProgress?.(written, total);
+    });
+
+    try {
+      await pipeline(source, stream);
+    } catch (err) {
+      // 外部没取消，是我们自己掐的 —— 那就是停滞，报清楚原因，
+      // 否则用户只看到一句 "The operation was aborted"
+      if (!opts.signal?.aborted && local.signal.aborted) {
+        throw new Error(
+          `速度过低已中断：${STALL_WINDOW_MS / 1000} 秒内不足 ${STALL_MIN_BYTES / 1024} KB`,
+        );
+      }
+      throw err;
+    }
+
+    opts.signal?.throwIfAborted();
+    await rename(part, dest);
+    return written;
+  } finally {
+    clearInterval(watchdog);
+    opts.signal?.removeEventListener("abort", onOuterAbort);
   }
-
-  const lenHeader = res.headers.get("content-length");
-  const total = lenHeader ? have + Number(lenHeader) : undefined;
-
-  if (!res.body) throw new Error("响应没有内容");
-
-  let written = have;
-  const stream = createWriteStream(part, { flags: resumed ? "a" : "w" });
-
-  const source = Readable.fromWeb(res.body as never);
-  source.on("data", (chunk: Buffer) => {
-    written += chunk.length;
-    opts.onProgress?.(written, total);
-  });
-
-  await pipeline(source, stream);
-
-  opts.signal?.throwIfAborted();
-  await rename(part, dest);
-  return written;
 }
 
 /** 取 URL 的 origin，用作 Referer。解析失败时给空串（不设这个头）。 */

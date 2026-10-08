@@ -30,7 +30,7 @@ import type {
   ProgressEvent,
 } from "@/core/types";
 import { assetsDir, ensureSessionDirs, sessionDir } from "@/core/store";
-import { PartialError, planFor, runTask } from "./kinds";
+import { DONE_MARKER, PartialError, planFor, runTask } from "./kinds";
 
 /** 同时在跑的任务数。见文件头第 4 条。 */
 export const DEFAULT_CONCURRENCY = 3;
@@ -366,8 +366,9 @@ function finish(
 /**
  * 产物是否已经在磁盘上。
  *
- * image / media 的 outputPath 是目录，判据是「目录里有文件」而不是「目录存在」——
- * 中断可能只留下一个空目录。
+ * image / media 的 outputPath 是目录，判据是**完工标记**而不是「目录里有文件」：
+ * 中断留下的是一个「里面有文件的目录」，按后者判断会把半截的批次当成已完成，
+ * 续跑时直接跳过。标记的含义见 kinds.ts 的 DONE_MARKER。
  */
 async function artifactExists(dir: string, task: DownloadTask): Promise<boolean> {
   if (!task.outputPath) return false;
@@ -376,8 +377,8 @@ async function artifactExists(dir: string, task: DownloadTask): Promise<boolean>
     const s = await stat(p);
     if (s.isFile()) return s.size > 0;
     if (s.isDirectory()) {
-      const files = await readdir(p);
-      return files.some((f) => !f.endsWith(".part"));
+      await stat(join(p, DONE_MARKER));
+      return true;
     }
   } catch {
     return false;
