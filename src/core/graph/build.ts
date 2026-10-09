@@ -4,7 +4,7 @@
  * 上层（API 路由、导出、下载）只认这个函数和它返回的 GraphModel，不关心
  * 背后是启发式还是 LLM。这也是两条路径能并存的原因：契约是同一个。
  *
- * 选择策略：配了 ANTHROPIC_API_KEY 就走 LLM，但**任何失败都自动降级**回
+ * 选择策略：配了 LLM_API_KEY 就走 LLM，但**任何失败都自动降级**回
  * 启发式并记录原因 —— 用户不该因为一次 API 限流或网络抖动就拿不到图。
  */
 
@@ -34,7 +34,7 @@ export async function buildGraph(
   if (wantLLM) {
     if (!hasLLM()) {
       // force:"llm" 但没配 key。如实说，别装作走了 LLM
-      return await fallback(topic, docs, opts, "未配置 ANTHROPIC_API_KEY");
+      return await fallback(topic, docs, opts, "未配置 LLM_API_KEY");
     }
     try {
       return await buildLlmGraph(topic, docs, { signal: opts.signal });
@@ -65,7 +65,7 @@ function llmErrorReason(err: unknown): string {
     return `LLM 限流或过载，已降级：${msg}`;
   }
   if (/\b(401|403|invalid.*api.*key|authentication)\b/i.test(msg)) {
-    return `ANTHROPIC_API_KEY 无效，已降级：${msg}`;
+    return `LLM_API_KEY 无效，已降级：${msg}`;
   }
   if (/timeout|ETIMEDOUT|ECONNRESET|fetch failed/i.test(msg)) {
     return `LLM 调用网络失败，已降级：${msg}`;

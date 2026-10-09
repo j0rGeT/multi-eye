@@ -261,7 +261,7 @@ export default function Home() {
             <span className="badge">{graph.stats.edgeCount} 边</span>
             <span className="badge">{graph.stats.clusterCount} 簇</span>
             <span className="badge">
-              {graph.stats.generatedBy === "llm" ? "Claude 语义" : "本地启发式"}
+              {graph.stats.generatedBy === "llm" ? "LLM 语义" : "本地启发式"}
             </span>
             {/* LLM 路径失败时会降级到启发式，原因必须可见 —— 否则用户会以为
                 模型没生效是「效果就这样」 */}

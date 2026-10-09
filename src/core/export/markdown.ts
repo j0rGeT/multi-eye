@@ -147,7 +147,7 @@ function overview(session: Session, graphedCount: number): string {
       [
         "构图方式",
         graph.stats.generatedBy === "llm"
-          ? "Claude 语义抽取"
+          ? "LLM 语义抽取"
           : "本地启发式（分词 + TF-IDF + 共现 + Louvain）",
       ],
     );
@@ -514,6 +514,8 @@ function methodName(m: Document["extractMethod"]): string {
       return "无头浏览器";
     case "ytdlp-subtitle":
       return "视频字幕";
+    case "bilibili-api":
+      return "B站接口";
     case "raw":
       return "仅摘要";
   }

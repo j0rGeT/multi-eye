@@ -2,9 +2,10 @@
  * 抓取降级链编排。
  *
  *   1. YouTube URL      → yt-dlp 字幕（视频的「正文」就是字幕）
- *   2. HTTP + Readability → 覆盖大部分博客/新闻/专栏
- *   3. JS 空壳判定命中   → 无头浏览器重试
- *   4. 全部失败          → 退化为搜索摘要（extractMethod: 'raw'）
+ *   2. B站视频 URL      → 公开接口取标题/标签/简介/字幕（**不走页面**）
+ *   3. HTTP + Readability → 覆盖大部分博客/新闻/专栏
+ *   4. JS 空壳判定命中   → 无头浏览器重试
+ *   5. 全部失败          → 退化为搜索摘要（extractMethod: 'raw'）
  *
  * 核心原则：**单篇失败不抛异常，而是产出带 error 的 Document**。
  * 一个主题下有几十篇资料，其中几篇抓不到是常态（知乎不登录、站点下线、
@@ -17,6 +18,7 @@ import { fetchHtml } from "./http";
 import { extractWithReadability, looksLikeCode, looksLikeSpa } from "./readability";
 import { fetchWithBrowser, isPlaywrightAvailable } from "./playwright";
 import { fetchTranscript, isYoutubeUrl } from "./youtube";
+import { fetchBilibiliVideo, isBilibiliVideoUrl } from "./bilibili";
 import { limiter } from "@/core/limit";
 
 export interface ExtractOptions {
@@ -81,7 +83,39 @@ export async function extractOne(
     return fallbackDocument(result, tr.error ?? "该视频没有可用字幕", t0);
   }
 
-  // ── 二级：HTTP + Readability ──
+  // ── 二级：B站视频接口 ──
+  if (isBilibiliVideoUrl(result.url)) {
+    const bv = await fetchBilibiliVideo(result.url, { signal });
+
+    /**
+     * 门槛用 `substantive` 而不是 `text` 非空 —— 语料版正文里还留着 UP 主名字，
+     * 空壳视频的 text 因此永远不为空。不卡这一道，「赵老师没灵魂」这七个字
+     * 就会被当成一篇资料的正文收进语料。
+     */
+    if (bv.substantive) {
+      return buildDoc(result, {
+        method: "bilibili-api",
+        text: bv.text,
+        markdown: bv.markdown,
+        title: bv.title || result.title,
+        images: bv.images,
+        author: bv.author ?? result.author,
+        publishedAt: bv.publishedAt ?? result.publishedAt,
+        startedAt: t0,
+      });
+    }
+
+    /**
+     * 接口拿不到就**直接兜底，不进 HTTP + Readability**。
+     *
+     * 和 YouTube 那条同理，但原因不同：B 站页面抓出来的是侧栏的「接下来播放」
+     * 推荐列表（导航 + 别人的视频标题），一千多字里没有一个是这个视频的内容。
+     * 抓不到正文时退回搜索摘要，比拿一段别的东西冒充正文诚实得多。
+     */
+    return fallbackDocument(result, bv.error ?? "B站接口未返回可用内容", t0);
+  }
+
+  // ── 三级：HTTP + Readability ──
   const res = await fetchHtml(result.url, { signal });
 
   if (res.ok && res.body) {
@@ -115,7 +149,7 @@ export async function extractOne(
       });
     }
 
-    // ── 三级：JS 空壳 → 无头浏览器 ──
+    // ── 四级：JS 空壳 → 无头浏览器 ──
     if (looksLikeSpa(res.body, extraction) && (await isPlaywrightAvailable())) {
       const br = await fetchWithBrowser(result.url, { signal });
       if (br.html) {
@@ -168,7 +202,7 @@ export async function extractOne(
     }
   }
 
-  // ── 四级：兜底 ──
+  // ── 五级：兜底 ──
   return fallbackDocument(
     result,
     res.error ?? "未能提取到正文",
@@ -194,10 +228,11 @@ interface DocParts {
 
 function buildDoc(r: SearchResult, p: DocParts): Document {
   const text = p.text.trim();
+  const title = p.title || r.title;
   return {
     id: r.id,
     url: r.url,
-    title: p.title || r.title,
+    title,
     site: r.site,
     kind: r.site === "youtube" || r.site === "bilibili" ? "video" : "article",
     text,
@@ -207,7 +242,13 @@ function buildDoc(r: SearchResult, p: DocParts): Document {
     author: p.author ?? r.author,
     publishedAt: p.publishedAt ?? r.publishedAt,
     images: p.images ?? [],
-    wordCount: countWords(text),
+    /**
+     * 连同标题一起计。构图时启发式的语料是 `` `${doc.title}。${doc.text}` ``，
+     * 图的门槛（`wordCount >= 30`）理应按同一份语料来量 —— 否则 B 站那种
+     * 「标题二十字 + 简介十几字、没有字幕」的视频会被判成没内容而挡在图外，
+     * 尽管它其实是有语料的。
+     */
+    wordCount: countWords(`${title}。${text}`),
     extractMethod: p.method,
     extractMs: Date.now() - p.startedAt,
     fetchedAt: new Date().toISOString(),

@@ -171,6 +171,8 @@ export function methodLabel(m: Document["extractMethod"]): string {
       return "无头浏览器";
     case "ytdlp-subtitle":
       return "字幕";
+    case "bilibili-api":
+      return "B站接口";
     case "raw":
       return "仅摘要";
   }

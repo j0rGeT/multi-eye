@@ -41,7 +41,25 @@ export const config = {
   searxngUrl: process.env.SEARXNG_URL ?? "http://localhost:8888",
   serperApiKey: process.env.SERPER_API_KEY ?? "",
   ytdlpPath: process.env.YTDLP_PATH ?? findYtdlp(),
-  anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",
+  /**
+   * LLM 构图。走 OpenAI 协议的 /chat/completions，所以任何兼容端点都能接：
+   * DeepSeek、OpenAI、通义、本地 vLLM 之间只差 base url 和模型名。
+   *
+   * 换协议（比如改用 Anthropic 原生 SDK）不是换三个环境变量的事，是要改
+   * llm.ts 里的调用形状 —— 那就明说，别假装它是可插拔的。
+   */
+  llmApiKey: process.env.LLM_API_KEY ?? "",
+  llmBaseUrl: (process.env.LLM_BASE_URL ?? "https://api.deepseek.com")
+    .replace(/\/+$/, ""),
+  llmModel: process.env.LLM_MODEL ?? "deepseek-flash",
+  /**
+   * 输出上限。必须给得比「答案本身需要的长度」宽很多：
+   * deepseek-flash 是推理模型，思维链和正文共享这一份额度，额度耗尽时
+   * content 会是空字符串（finish_reason=length），看起来像「模型什么都没说」。
+   */
+  llmMaxTokens: Number(process.env.LLM_MAX_TOKENS ?? 32_768),
+  /** 单次 LLM 请求的超时。默认给足 5 分钟：几十篇长文的抽取本来就是慢活。 */
+  llmTimeoutMs: Number(process.env.LLM_TIMEOUT_MS ?? 300_000),
   enablePlaywright: process.env.ENABLE_PLAYWRIGHT === "true",
   fetchTimeoutMs: Number(process.env.FETCH_TIMEOUT_MS ?? 15_000),
   fetchMaxBytes: Number(process.env.FETCH_MAX_BYTES ?? 5 * 1024 * 1024),
@@ -54,9 +72,9 @@ export const config = {
    * HTTP_PROXY/HTTPS_PROXY 环境变量，所以 shell 里 export 了也没用，
    * 必须自己挂 ProxyAgent。这里默认指向本机的 VPN 代理。
    *
-   * 代价要说清楚：走 VPN 意味着用境外 IP 访问知乎/B站这类国内站点，
-   * 部分站点会对境外 IP 降级或拦截。若发现国内站点反而抓不到，
-   * 把 FETCH_PROXY_URL 置空即可回到直连。
+   * 只对**境外**站点生效：国内站点（B站/知乎/小红书/百度…）会自动直连 ——
+   * 实测从 VPN 出口过去要么超时要么被风控，所以这不是优化而是修错。
+   * 判定逻辑见 fetch/agent.ts 的 DOMESTIC_SUFFIXES。
    */
   fetchProxyUrl: process.env.FETCH_PROXY_URL ?? "http://127.0.0.1:6666",
 } as const;
@@ -83,7 +101,19 @@ export function ytdlpCommonArgs(): string[] {
 }
 
 export function hasLLM(): boolean {
-  return config.anthropicApiKey.length > 0;
+  return config.llmApiKey.length > 0;
+}
+
+/**
+ * LLM 走的是哪条链路。给健康检查和界面上的一行说明用。
+ *
+ * 调用本身**不经过 FETCH_PROXY_URL**。那条代理是为抓取准备的：目标站点在
+ * 墙外，本机得从境外出口出去。LLM 端点（DeepSeek）在境内，把 API 请求塞进
+ * 同一个境外出口只会更慢、更容易被判成异常流量 —— 两件事的网络需求正好相反，
+ * 所以 llm.ts 用全局 fetch 直连，而不是 httpFetch。
+ */
+export function describeLlmChain(): string {
+  return `${config.llmModel} @ ${config.llmBaseUrl}`;
 }
 
 /**

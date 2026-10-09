@@ -74,6 +74,8 @@ export type ExtractMethod =
   | "readability"
   | "playwright"
   | "ytdlp-subtitle"
+  /** B站公开接口（标题/标签/简介/字幕）。不是页面提取，所以单列一项。 */
+  | "bilibili-api"
   | "raw";
 
 export interface DocImage {

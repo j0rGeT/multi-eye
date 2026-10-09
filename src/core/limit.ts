@@ -25,6 +25,8 @@ export function limiter(key: string, concurrency: number) {
 export function isRetryable(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   if (/HTTP 4(0[13]|04|22)/.test(msg)) return false; // 401/403/404/422
+  // 412 是 B站/知乎这类站点的风控页，重试只会让它更认定我们是异常流量
+  if (/HTTP 412|风控/.test(msg)) return false;
   if (/401|403|404|422/.test(msg) && /鉴权|无效|未配置/.test(msg)) return false;
   // YouTube 的机器人验证。官方解法是传 cookies，而本项目明确不碰登录态，
   // 所以这对我们是永久性失败 —— 重试只会白等三次 90 秒超时。

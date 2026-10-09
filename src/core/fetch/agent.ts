@@ -12,7 +12,10 @@
  *     必须让 fetch 和 agent 来自同一份 —— 所以这里统一用 npm undici 的 fetch，
  *     它和 Node 全局 fetch 本就是同一实现，行为一致。
  *
- * 代理地址来自 config.fetchProxyUrl；置空则自动退回直连，调用方无感。
+ *  3. **不是所有请求都该走代理。** 国内站点从境外出口过去要么超时要么被风控，
+ *     所以按域名分流：国内直连、境外走代理（见 DOMESTIC_SUFFIXES）。
+ *
+ * 代理地址来自 config.fetchProxyUrl；置空则全部直连，调用方无感。
  */
 
 import { ProxyAgent, fetch as undiciFetch, type Dispatcher } from "undici";
@@ -29,6 +32,70 @@ const CONNECT_TIMEOUT_MS = 30_000;
 
 let agent: Dispatcher | undefined;
 let agentForUrl = "";
+
+/**
+ * 国内站点与它们的内容 CDN。
+ *
+ * 列出这一份的理由是：代理出口在境外，而这一类站点对境外 IP 要么超时、
+ * 要么直接风控 —— 把它们的请求塞进 VPN 是纯损失。本机实测（2026-10）：
+ *
+ *   B站视频页   走代理 15 秒超时（→ 只能退回搜索摘要）；直连 0.8 秒拿到 45KB
+ *   B站接口     走代理 HTTP 412 风控；直连 200
+ *   知乎        两边都是 403（未登录被拦）—— 也就是说这条分流对知乎没有影响，
+ *               别指望它能修好知乎
+ *
+ * 境外站点仍然走代理：那本来就是代理存在的理由。
+ */
+const DOMESTIC_SUFFIXES = [
+  // B站（含图片/字幕 CDN）
+  "bilibili.com",
+  "hdslb.com",
+  "biliapi.net",
+  // 知乎
+  "zhihu.com",
+  "zhimg.com",
+  // 小红书
+  "xiaohongshu.com",
+  "xhscdn.com",
+  // 百度系
+  "baidu.com",
+  "bdstatic.com",
+  "bdimg.com",
+  // 其余常见国内站点
+  "weibo.com",
+  "weibo.cn",
+  "sina.com.cn",
+  "douyin.com",
+  "ixigua.com",
+  "csdn.net",
+  "juejin.cn",
+  "cnblogs.com",
+  "gitee.com",
+  "qq.com",
+  "163.com",
+  "sohu.com",
+  "alipay.com",
+];
+
+export function isDomesticHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/\.$/, "");
+  return DOMESTIC_SUFFIXES.some((s) => h === s || h.endsWith(`.${s}`));
+}
+
+/** 这个 URL 该走代理吗。解析不出主机名时按原策略（走代理）处理。 */
+export function shouldProxy(url: string): boolean {
+  try {
+    return !isDomesticHost(new URL(url).hostname);
+  } catch {
+    return true;
+  }
+}
+
+function urlText(input: RequestInfo | URL): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.href;
+  return (input as Request).url;
+}
 
 /** 取得（并缓存）当前配置对应的代理 agent；未配置代理时返回 undefined。 */
 export function proxyAgent(): Dispatcher | undefined {
@@ -78,7 +145,8 @@ export const httpFetch: typeof globalThis.fetch = (async (
   input: RequestInfo | URL,
   init?: RequestInit,
 ): Promise<Response> => {
-  const dispatcher = proxyAgent();
+  // 国内站点直连，境外走代理 —— 见 DOMESTIC_SUFFIXES 上的实测记录
+  const dispatcher = shouldProxy(urlText(input)) ? proxyAgent() : undefined;
   // undici 的 RequestInit 多一个 dispatcher 字段，而 lib.dom 的类型里没有，
   // 所以先构造对象再补字段，避免直接展开一个不兼容的类型。
   const merged: RequestInit & { dispatcher?: Dispatcher } = { ...(init ?? {}) };
@@ -93,6 +161,53 @@ export const httpFetch: typeof globalThis.fetch = (async (
     throw new Error(networkErrorText(err), { cause: err });
   }
 }) as typeof globalThis.fetch;
+
+/**
+ * 直连版：与 httpFetch 同签名，但**无条件不走代理**。
+ *
+ * httpFetch 已经会按域名分流，所以这里的存在意义是「我确定这个请求必须直连」：
+ * LLM 端点（境内的 API）和 B站接口都属于这类。它不依赖 DOMESTIC_SUFFIXES
+ * 那份清单，因此换一个国内的 LLM 服务商不会被漏掉。
+ */
+export const directFetch: typeof globalThis.fetch = (async (
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> => {
+  try {
+    return await globalThis.fetch(input, init);
+  } catch (err) {
+    if (isAbort(err)) throw err;
+    throw new Error(networkErrorText(err), { cause: err });
+  }
+}) as typeof globalThis.fetch;
+
+/**
+ * 把「调用方的取消」和「本次请求的超时」合成一个 signal。
+ *
+ * 用 AbortSignal.timeout 单独做不到这件事 —— 那个 signal 没法把外部的 abort
+ * 接进来，于是「用户点了取消」会一直等到超时才响应。用完必须 release()，
+ * 否则定时器会一直挂着。
+ */
+export function withTimeout(
+  signal: AbortSignal | undefined,
+  ms: number,
+  what: string,
+): { signal: AbortSignal; release: () => void } {
+  const ac = new AbortController();
+  const onAbort = () => ac.abort(signal?.reason);
+  signal?.addEventListener("abort", onAbort, { once: true });
+  const timer = setTimeout(
+    () => ac.abort(new Error(`${what}超时（${Math.round(ms / 1000)} 秒）`)),
+    ms,
+  );
+  return {
+    signal: ac.signal,
+    release: () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    },
+  };
+}
 
 function isAbort(err: unknown): boolean {
   return (

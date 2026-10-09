@@ -3,6 +3,7 @@ import {
   checkProxy,
   checkSearxng,
   config,
+  describeLlmChain,
   describeSearchChain,
   hasLLM,
   hasSerper,
@@ -43,8 +44,8 @@ export async function GET() {
       ok: proxy.ok,
       detail: config.fetchProxyUrl.trim() || "直连（未配置代理）",
       hint: proxy.ok
-        ? "抓取与无头浏览器都经此代理。Node 的 fetch 不读环境变量，必须在此显式配置。"
-        : `代理不可达：${proxy.error}。置空 FETCH_PROXY_URL 可回到直连。`,
+        ? "只对境外站点生效，国内站点（B站/知乎/小红书/百度…）自动直连 —— 从境外出口过去要么超时要么被风控。"
+        : `代理不可达：${proxy.error}。置空 FETCH_PROXY_URL 可全部直连。`,
     },
     {
       id: "serper",
@@ -64,10 +65,10 @@ export async function GET() {
     },
     {
       id: "llm",
-      label: "Claude 语义构图",
+      label: "LLM 语义构图",
       required: false,
       ok: hasLLM(),
-      detail: hasLLM() ? "已配置" : "未配置 ANTHROPIC_API_KEY",
+      detail: hasLLM() ? describeLlmChain() : "未配置 LLM_API_KEY",
       hint: "可选。缺失时走本地启发式构图（分词 + TF-IDF + 共现 + Louvain）。",
     },
     {

@@ -144,6 +144,7 @@ function tally(docs: Document[]): Record<ExtractMethod, number> {
     readability: 0,
     playwright: 0,
     "ytdlp-subtitle": 0,
+    "bilibili-api": 0,
     raw: 0,
   };
   for (const d of docs) out[d.extractMethod] += 1;
