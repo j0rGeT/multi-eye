@@ -86,7 +86,8 @@ export async function fetchTranscript(
     // 先试人工字幕，再用自动字幕兜底。--sub-langs 用 zh.* / en.* 覆盖 zh-Hans、
     // zh-CN、en-US 这些变体，否则会因语言标签不精确而漏掉。
     const baseArgs = [
-      ...ytdlpCommonArgs(),
+      // 这个函数只服务 YouTube，一定走代理
+      ...ytdlpCommonArgs(url),
       "--skip-download",
       /*
         顺手把元信息写成 JSON。

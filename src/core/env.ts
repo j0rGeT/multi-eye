@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createConnection } from "node:net";
 import { promisify } from "node:util";
+import { shouldProxy } from "@/core/net/domestic";
 
 const execFileAsync = promisify(execFile);
 
@@ -93,19 +94,36 @@ export function hasSerper(): boolean {
 }
 
 /**
- * 所有 yt-dlp 调用共用的参数：忽略用户级配置 + 挂代理。
+ * 所有 yt-dlp 调用共用的参数：忽略用户级配置 + **按目标站点**决定挂不挂代理。
  *
- * 为什么显式传 --proxy 而不靠 HTTPS_PROXY 环境变量：yt-dlp 确实会读环境变量，
- * 但那样项目里就有两处代理真相，容易出现「网页走了代理、yt-dlp 直连」这种
- * 极难排查的不一致。FETCH_PROXY_URL 保持唯一来源。
+ * `target` 是这次要访问的那个 URL，必传 —— 参数按域名分流是这里唯一容易搞错、
+ * 又只有在真跑一次时才暴露的地方。
  *
- * 这一条对本项目是硬需求而非优化：调用方要访问的是 YouTube，在当前网络下
- * 直连拿不到任何结果。
+ * ── 为什么必须显式传 `--proxy ""`，而不是「国内站点就不传 `--proxy`」──
+ *
+ * 实测（2026-10）：本机 macOS 的系统级 HTTPS 代理指向 127.0.0.1:6666，而
+ * yt-dlp 的代理来源不止环境变量 —— `urllib.request.getproxies()` 会去读系统
+ * 代理设置。于是**即使 `--ignore-config`、即使 `env -u https_proxy`，
+ * Proxy map 里照样有 http/https/socks 三条**，B站照样被塞进境外出口：
+ *
+ *   yt-dlp <B站视频>                    → ERROR: _ssl.c:1011: handshake timed out
+ *   yt-dlp --proxy "" <同一个视频>       → 正常拿到标题与时长
+ *
+ * 所以国内目标必须**显式清空**代理，光是不加这个参数是不够的。这与
+ * `fetch/agent.ts` 给 HTTP 层做的是同一件事（见 `core/net/domestic.ts`），
+ * 只是 yt-dlp 这条链此前漏了。
+ *
+ * ── 为什么显式传代理地址而不靠环境变量 ──
+ *
+ * 那样项目里就有两处代理真相，容易出现「网页走了代理、yt-dlp 直连」这种极难
+ * 排查的不一致。FETCH_PROXY_URL 保持唯一来源。
  */
-export function ytdlpCommonArgs(): string[] {
+export function ytdlpCommonArgs(target: string): string[] {
   const args = ["--ignore-config", "--no-warnings"];
   const proxy = config.fetchProxyUrl.trim();
-  if (proxy) args.push("--proxy", proxy);
+  if (!proxy) return args;
+  // 空串是「明确不要代理」，与「没传这个参数」不是一回事 —— 见上面的实测
+  args.push("--proxy", shouldProxy(target) ? proxy : "");
   return args;
 }
 

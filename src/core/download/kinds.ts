@@ -328,13 +328,34 @@ export class PartialError extends Error {
  */
 const MEDIA_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 
+/**
+ * 从 yt-dlp 的 stderr 里挑出最像「原因」的那一行，拼成 `：xxx` 的形式。
+ *
+ * 挑不出任何东西就返回空串 —— **不编造**。这一点比看起来重要：这条消息会
+ * 一路进 `DownloadTask.error` 显示给用户，写一句「下载失败」而不给依据，
+ * 和给一句错的依据，是同一类问题。
+ */
+function ytdlpReason(stderr: string): string {
+  const lines = stderr.split("\n").map((l) => l.trim()).filter(Boolean);
+  const errorLine = [...lines].reverse().find((l) => l.startsWith("ERROR:"));
+  const line = errorLine ?? lines[lines.length - 1];
+  if (!line) return "";
+  return `：${line.replace(/^ERROR:\s*/, "").slice(0, 200)}`;
+}
+
 async function downloadMedia(ctx: RunContext): Promise<number> {
   const { doc, assetsDir, plan } = ctx;
   const dir = join(assetsDir, plan.outputPath);
   await mkdir(dir, { recursive: true });
 
   const args = [
-    ...ytdlpCommonArgs(),
+    /*
+      按 `doc.url` 分流：这条路上什么站点都可能出现 —— YouTube 得走代理，
+      而 B站必须直连（系统级代理会被 yt-dlp 自动继承，只靠不传 --proxy 是
+      挡不住的，见 `ytdlpCommonArgs` 上的实测记录）。此前这里是无条件挂代理，
+      于是所有 B站视频下载都以「yt-dlp 退出码 1 / TLS 握手超时」告终。
+    */
+    ...ytdlpCommonArgs(doc.url),
     // 续传：yt-dlp 会接着 .part 文件下，与 HTTP 那条路的 Range 是同一目的
     "--continue",
     "--progress",
@@ -360,6 +381,13 @@ async function downloadMedia(ctx: RunContext): Promise<number> {
   let bytes = 0;
   let total: number | undefined;
   let outputPath = "";
+  let stderrTail = "";
+
+  child.stderr?.on("data", (buf: Buffer) => {
+    // 失败原因只写在 stderr 里。不留一份的话，用户（和排查问题的我们）能拿到的
+    // 只有「退出码 1」—— 那等于什么都没说。
+    stderrTail = (stderrTail + buf.toString()).slice(-4_000);
+  });
 
   child.stdout?.on("data", (buf: Buffer) => {
     for (const line of buf.toString().split("\n")) {
@@ -379,7 +407,7 @@ async function downloadMedia(ctx: RunContext): Promise<number> {
       child.on("error", reject);
       child.on("close", (code) => {
         if (code === 0) resolve();
-        else reject(new Error(`yt-dlp 退出码 ${code}`));
+        else reject(new Error(`yt-dlp 退出码 ${code}${ytdlpReason(stderrTail)}`));
       });
     });
   } finally {

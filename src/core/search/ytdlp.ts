@@ -66,7 +66,9 @@ export class YtDlpProvider implements SearchProvider {
 
     // 必须用参数数组，绝不拼 shell 字符串：查询词来自用户输入，拼接会有注入风险
     const args = [
-      ...ytdlpCommonArgs(),
+      // 这里永远是 YouTube（上面已经挡掉了别的站点）。`ytsearch…` 不是 URL、
+      // 解析不出主机名，`shouldProxy` 按「拿不准就走代理」处理 —— 正是想要的。
+      ...ytdlpCommonArgs(`ytsearch${limit}:${q.text}`),
       "--dump-single-json",
       "--flat-playlist",
       `ytsearch${limit}:${q.text}`,
