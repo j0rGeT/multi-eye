@@ -332,6 +332,14 @@ function buildDoc(r: SearchResult, p: DocParts): Document {
     fetchedAt: new Date().toISOString(),
     truncated: p.truncated,
     error: p.error,
+    /*
+      从搜索结果复制一份切题判定。下游（打包判据、报告、界面）因此直接读
+      `doc.relevance` 就行，不必各自再去 join 一次 results —— 那种 join
+      漏掉一处就是「某个界面不显示徽章」这种局部失灵，很难注意到。
+
+      `undefined` = 未判定（旧会话、或那条结果没被判定）。**不是**不相关。
+    */
+    relevance: r.relevance,
   };
 }
 

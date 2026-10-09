@@ -116,6 +116,35 @@ export interface SearchPlan {
   fallbackReason?: string;
 }
 
+/** 一条结果切不切题。`uncertain` 表示**不标记**，不是「可能不相关」。 */
+export type RelevanceVerdict = "likely" | "unlikely" | "uncertain";
+
+/**
+ * 相关性判定结果。
+ *
+ * ── 它**不是**质量分 ──
+ *
+ * `quality.ts` 开头写着「不用语言模型打质量分」，那条边界没有被这个字段推翻。
+ * 两者回答的是不同的问题：
+ *
+ *   - 相关性：**「这条切不切你的题」** —— 判据是用户自己给的查询，可对照、可复现
+ *   - 质量：**「拿没拿到正文」** —— 见 `bodyGrade`
+ *
+ * 而这个系统**在任何地方都不回答「内容对不对」**。一个切题的结果完全可能是错的；
+ * 一个不切题的结果完全可能是对的（只是不是你要的）。所以：
+ *
+ *   - 绝不拿它去改 `bodyGrade`，也绝不合成任何「综合评分」
+ *   - **只标记，不删除**（延续「绝不静默丢东西」）—— 排序仍由 `rankResults` 决定，
+ *     一行都不动。默认排序「多源印证优先」是这套系统的核心主张，换掉它得由用户自己决定
+ */
+export interface Relevance {
+  verdict: RelevanceVerdict;
+  /** 为什么这么判，给人看的一句话。 */
+  reason: string;
+  /** 这一判是谁给的。`lexical` 是本地规则（可复现），`llm` 是模型批量判定。 */
+  source: "lexical" | "llm";
+}
+
 /**
  * 一条结果自带的客观量化信号 —— 播放量、star 数、评论数这类**上游本来就给了的事实**。
  *
@@ -175,6 +204,14 @@ export interface SearchResult {
   durationSec?: number;
   /** 上游给的客观指标。没有就是 undefined —— 不编造，也不填 0。 */
   signals?: ResultSignal[];
+  /**
+   * 是否切题。只标记，不删除，也不参与排序。
+   *
+   * 可选：旧会话没有这个字段，读取方必须把 `undefined` 当「**未判定**」——
+   * 绝不当成 `unlikely`。把「没测过」读成「测出来是坏的」是最容易犯、
+   * 也最难发现的一类错。
+   */
+  relevance?: Relevance;
 }
 
 export interface ProviderCapabilities {
@@ -259,6 +296,14 @@ export interface Document {
    * 而不是抛异常 —— 单篇失败不该中断整个主题的流程。
    */
   error?: string;
+  /**
+   * 从对应的 `SearchResult` 复制过来的切题判定。
+   *
+   * 复制而不是让下游自己去 `results.find(...)`：正文、报告、下载包、界面都要读它，
+   * 每处再建一次索引既是重复劳动，也容易出现「某一处漏了 join」这种局部失灵。
+   * `undefined` = 未判定，**不是**不相关。
+   */
+  relevance?: Relevance;
 }
 
 // ─────────────────────────── 图模型 ───────────────────────────
@@ -471,6 +516,20 @@ export type SearchEvent =
       queries: string[];
     }
   | { type: "results"; site: SiteKey; results: SearchResult[] }
+  | {
+      type: "relevance";
+      /**
+       * 切题判定，`SearchResult.id → Relevance`。
+       *
+       * 单独一个事件、而不是塞进 `results`：判定要等模型几秒，而结果列表
+       * 早就该显示了。界面先出列表、徽章随后补上，比让用户对着空列表等
+       * 更接近这套系统一贯的做法（能先给的先给）。
+       *
+       * **只标记，不删除。** 收到这个事件的界面不该拿它去过滤掉任何东西 ——
+       * 排序仍然完全由 `rankResults` 决定。
+       */
+      verdicts: Record<string, Relevance>;
+    }
   | { type: "provider"; log: ProviderLogEntry }
   | {
       type: "done";

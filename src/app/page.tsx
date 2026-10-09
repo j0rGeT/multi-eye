@@ -214,6 +214,20 @@ export default function Home() {
             case "plan":
               setPlan(e.plan);
               break;
+            case "relevance":
+              /*
+                判定比结果晚到，所以这里是**补写**已有的那批结果，而不是追加。
+
+                贴在 `results` 上（与服务端同形）而不是另存一个 map：这样
+                结果列表、徽章、统计读的都是同一个 `r.relevance`，
+                不会出现「两处各有一份、其中一处忘了更新」。
+              */
+              setResults((prev) =>
+                prev.map((r) =>
+                  e.verdicts[r.id] ? { ...r, relevance: e.verdicts[r.id] } : r,
+                ),
+              );
+              break;
           }
         },
         ac.signal,

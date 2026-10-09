@@ -11,6 +11,7 @@
 import type {
   ProviderId,
   ProviderLogEntry,
+  Relevance,
   ResultSignal,
   SearchPlan,
   SearchProvider,
@@ -30,6 +31,8 @@ import { filterByTime } from "./filter";
 import { signalMagnitude } from "@/core/signals";
 import { isDirectOnly } from "./sites";
 import { variantFor } from "./plan";
+import { lexicalRelevance, mergeRelevance } from "./relevance";
+import { judgeRelevance } from "./relevance-llm";
 import { probeTopicProviders } from "./registry";
 
 /**
@@ -443,7 +446,48 @@ export async function searchAll(
   const ranked = rankResults(flattened, sortMode ?? "relevant");
   const { kept, dropped, unknown } = filterByTime(ranked, timeRange);
 
-  return { results: kept, log: allLogs, timeFilter: { dropped, unknown } };
+  /*
+    相关性判定放在**最后**，两个理由：
+
+      1. 只为真正留下的那批付出代价 —— 时间筛掉的那些不必送模型
+      2. `kept` 已经是最终顺序，模型看到的顺序和用户看到的一致
+
+    顺序不能反过来：`filterByTime` 不读 relevance，而 rankResults 若是读了，
+    「默认排序 = 多源印证优先」这条核心主张就被悄悄改掉了。判定只贴标签。
+  */
+  const results = await annotateRelevance(kept, plan, signal);
+
+  return { results, log: allLogs, timeFilter: { dropped, unknown } };
+}
+
+/**
+ * 给每条结果贴上切题判定。**只标记，不重排、不删除。**
+ *
+ * 两条判定并行做完再合：词法是本地纯函数（瞬间），模型要几秒。让模型那条自己
+ * 跑，词法结果先合进去也行 —— 但那样返回时机就变成「谁快谁说话」，
+ * 同一批数据两次跑可能得到不同结果，不好排查。这里的等待有上限（见
+ * `relevance-llm.ts` 的 TIMEOUT_MS），不会无限期挂着。
+ */
+async function annotateRelevance(
+  results: SearchResult[],
+  plan: SearchPlan | undefined,
+  signal?: AbortSignal,
+): Promise<SearchResult[]> {
+  // 没走分析（旧调用点、或 plan 缺失）就整体弃权 —— 没有判据，不编造判据
+  if (!plan) return results;
+
+  const lexical = new Map<string, Relevance>();
+  for (const r of results) lexical.set(r.id, lexicalRelevance(r, plan));
+
+  const judged = await judgeRelevance(results, plan, { signal });
+
+  return results.map((r) => {
+    const lex = lexical.get(r.id);
+    const llm = judged.get(r.id);
+    // 两边都没有是不可能的（词法对每条都会给一个结果），这里只是把类型收敛严
+    const relevance = lex && llm ? mergeRelevance(lex, llm) : (llm ?? lex);
+    return relevance ? { ...r, relevance } : r;
+  });
 }
 
 /**

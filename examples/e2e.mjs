@@ -290,6 +290,8 @@ try {
   const results_ = [];
   const providerLog = [];
   let plan = null;
+  let relevanceEvent = null;
+  let reachedDone = false;
 
   const [, searchMs] = await timed(() =>
     sse(`${BASE}/api/search`, {
@@ -306,8 +308,12 @@ try {
         debug(`  ← ${ev.site}: ${ev.results.length} 条`);
       } else if (ev.type === "provider") {
         providerLog.push(ev.log);
+      } else if (ev.type === "relevance") {
+        relevanceEvent = ev;
+        debug(`relevance: ${Object.keys(ev.verdicts).length} 条判定`);
       } else if (ev.type === "done") {
         sessionId = ev.sessionId;
+        reachedDone = true;
       } else if (ev.type === "error") {
         debug("error:", ev.message);
       }
@@ -367,6 +373,30 @@ try {
       JSON.stringify(plan.plan.variants),
     );
   }
+
+  /*
+    相关性判定（P12.3）。断言「每条结果都拿到了一份判定」——
+    漏掉的话界面只是少了徽章，不会报错，所以必须在这里钉住。
+
+    **不断言「标出了几条」**：那是数据决定的，不是代码决定的。
+    写死一个数字会让这条断言在换了搜索词之后无谓地变红。
+  */
+  // 判定走的是**独立的 relevance 事件**，不在 `results` 事件里 ——
+  // 所以要拿 id 去 verdicts 里对，而不是读 `ev.results[].relevance`
+  const verdicts = relevanceEvent?.verdicts ?? {};
+  const judged = results_.filter((r) => verdicts[r.id]).length;
+  check(
+    "搜索",
+    "每条结果都拿到了切题判定",
+    results_.length > 0 && judged === results_.length,
+    `${judged}/${results_.length}`,
+  );
+  check(
+    "搜索",
+    "收到了独立的 relevance 事件",
+    reachedDone && relevanceEvent,
+    relevanceEvent ? `${Object.keys(relevanceEvent.verdicts).length} 条判定` : "没收到",
+  );
 
   // ── 2. 抓取 ────────────────────────────────────────────────
   step("2. 抓取正文（SSE 逐篇）");
@@ -718,6 +748,86 @@ try {
       "拦下 B 站页面骨架",
       Boolean(boilerplateReason("首页 番剧 直播 游戏中心 会员购\n点赞 投币 收藏 稿件 投诉")),
       "",
+    );
+  }
+
+  // ── 6.7 相关性判定回归 ─────────────────────────────────────
+  //
+  // P12.3 的核心判据。用一个**真实反例**（用户会话 bzIgW6vdFj 里那条 ERP
+  // 产品的「v4.1.7 发布」）钉住它 —— 这条判据一旦被改松，那 7 条噪音就会
+  // 重新混进结果里，而界面上看不出来（它们只是「没被标记」而已）。
+  //
+  // 词法规则在 `search/relevance.ts` 里，是个**叶子模块**（只 import type），
+  // 所以能像 boilerplate.ts 那样直接从 .ts 引入。模型那半边另有文件，不测这里。
+  step("6.7 相关性判定回归（反例必须被标出）");
+
+  let lexicalRelevance = null;
+  let latinHead = null;
+  try {
+    ({ lexicalRelevance, latinHead } = await import("../src/core/search/relevance.ts"));
+  } catch (err) {
+    soft("相关性", "能加载 relevance.ts", `跳过：当前 Node 不支持直接跑 .ts（${err.message}）`);
+  }
+
+  if (lexicalRelevance) {
+    // 与探针实测出来的那份 plan 同形
+    const plan = {
+      raw: "DeepSeek-V4.1-Flash",
+      intent: "了解 DeepSeek V4.1-Flash 是什么、能力与实测表现如何",
+      entity: { name: "DeepSeek-V4.1-Flash", aliases: ["DeepSeek V4.1 Flash"] },
+      disambiguators: ["DeepSeek"],
+      negatives: ["软件版本号 v4.1.7", "DeepSeek-V3", "DeepSeek-R1"],
+      variants: {},
+      source: "llm",
+    };
+    const at = (title, snippet = "") => ({ id: "x", title, snippet });
+
+    check(
+      "相关性",
+      "词根取到最长的拉丁段（deepseek，而不是 flash）",
+      latinHead(plan) === "deepseek",
+      `latinHead=${latinHead(plan)}`,
+    );
+
+    /*
+      反例，逐条都来自真实数据。
+
+      第二条尤其关键：它的摘要里写着「Flash 目前好像正常」，所以**按词命中
+      `flash`**。这正是「取最长词根」而不是「取所有 ≥4 字符的词」的理由 ——
+      换成后者，它会和真结果一起被判成相关。
+    */
+    const junk = [
+      ["Skyeye 云企业级AI+零代码智能制造系统-ERP、财务、商城板块 - v4.1.7 发布", "采用 SpringBoot+UNI-APP 的零代码平台开发模式"],
+      ["[Google Gemini] Gemini 好像用不了了", "Gemini Pro 不管问什么 都拒绝回答。Flash 目前好像正常。"],
+      ["$100 预算 + 四个顶级大模型，造出的 PDF 编辑器点几下就露馅", "给 Gemini 3.8 Flash、GPT Astra 6 各 $100 预算"],
+      ["无内鬼，又来点大肥鱼梗图", ""],
+    ];
+    for (const [title, snippet] of junk) {
+      const v = lexicalRelevance(at(title, snippet), plan);
+      check("相关性", `标出不相关的：${title.slice(0, 22)}…`, v.verdict === "unlikely", `${v.verdict} · ${v.reason}`);
+    }
+
+    // 正例：切题的**一条都不许被误杀**。这半边和上面同等重要 ——
+    // 判据放宽会漏掉噪音，收紧则会误杀资料，两个方向都得钉
+    const good = [
+      ["DeepSeek V4.1 Flash 首发实测，吊打自家 Pro 模型？！", ""],
+      ["如何使用满血DeepSeek v4 flash正式版 (教材00:28开始)", ""],
+      ["【突发】DeepSeek-V4-Flash 正式版 API 上线公测！", ""],
+      ["DeepSeek · GitHub", ""],
+    ];
+    for (const [title, snippet] of good) {
+      const v = lexicalRelevance(at(title, snippet), plan);
+      check("相关性", `不误杀切题结果：${title.slice(0, 22)}…`, v.verdict !== "unlikely", v.verdict);
+    }
+
+    // 中文主题必须**弃权**。实测：「露营装备」整名匹配会把 55 条里的 48 条
+    // （含 "Camping Gear Guide"）判成不相关 —— 那是灾难，不是判据
+    const cjkPlan = { ...plan, raw: "露营装备", entity: { name: "露营装备", aliases: [] }, negatives: [] };
+    check(
+      "相关性",
+      "中文主题弃权（不做词法判定）",
+      lexicalRelevance(at("Camping Gear Guide", ""), cjkPlan).verdict === "uncertain",
+      latinHead(cjkPlan) === null ? "没有拉丁词根 → uncertain" : `**latinHead 应为 null，实得 ${latinHead(cjkPlan)}**`,
     );
   }
 

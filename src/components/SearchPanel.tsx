@@ -26,6 +26,7 @@ import {
 } from "@/core/search/filter";
 import { formatDate, relativeTime } from "@/core/time";
 import { BODY_GRADE_LABELS, bodyGrade } from "@/core/quality";
+import { relevanceSummary } from "@/core/search/relevance";
 import { formatSignalValue, signalSummary } from "@/core/signals";
 import { methodLabel } from "./NodeDetail";
 import FeedPanel from "./FeedPanel";
@@ -442,10 +443,23 @@ function ResultList({
   const docById = new Map(documents.map((d) => [d.id, d]));
   const [groupBy, setGroupBy] = useState<GroupBy>("site");
 
+  /*
+    「暂时隐藏疑似不相关的」—— **默认关**。
+
+    默认关是这个项目的一贯做法（见 duplicateOf）：标记是为了让人看见，
+    不是为了让人看不见。开了也只是**本地视图**上的隐藏，数据一条没少 ——
+    报告、打包、抓取都还是全量。真要删，得用户自己在抓取时勾选。
+  */
+  const [hideIrrelevant, setHideIrrelevant] = useState(false);
+  const { judged, unlikely } = relevanceSummary(results);
+  const visible = hideIrrelevant
+    ? results.filter((r) => r.relevance?.verdict !== "unlikely")
+    : results;
+
   // 融合后的 results 是全局排序的，但用户的心智模型是分桶的，
   // 所以这里按选定的维度重新分。
   const groups = new Map<string, SearchResult[]>();
-  for (const r of results) {
+  for (const r of visible) {
     const key = groupBy === "site" ? r.site : r.provider;
     const list = groups.get(key);
     if (list) list.push(r);
@@ -492,6 +506,42 @@ function ResultList({
           ))}
         </div>
       </div>
+
+      {/*
+        相关性判定的结果。**标记，不下架** —— 默认全都看得见，
+        这一行只是把「其中几条可能不是你要的」说出来，并给一个**默认关**的
+        本地筛选。判据（为什么标它）在每条结果的悬浮里。
+
+        措辞刻意是「疑似」：判定回答的是「切不切你的题」，判错的代价由用户
+        自己一眼就能核实（点开看看），所以这里不做任何断言式的措辞。
+      */}
+      {unlikely > 0 && (
+        <p className="dim" style={{ fontSize: 11, margin: "0 0 10px" }}>
+          已判定 {judged} 条的切题度，其中{" "}
+          <span style={{ color: "var(--warn, #d29922)" }}>
+            {unlikely} 条疑似与主题不相关
+          </span>
+          （依据见每条结果的悬浮说明）。
+          <button
+            className="badge"
+            onClick={() => setHideIrrelevant((v) => !v)}
+            title={
+              hideIrrelevant
+                ? "恢复显示全部结果。隐藏只是视图上的 —— 报告与下载包里一条都没少。"
+                : "只在列表里隐藏这些条目。报告与下载包仍然是全量的。"
+            }
+            style={{
+              marginLeft: 6,
+              cursor: "pointer",
+              color: hideIrrelevant ? "var(--accent)" : "var(--fg-dim)",
+              borderColor: hideIrrelevant ? "#1f6feb66" : "var(--border)",
+              background: hideIrrelevant ? "#1f6feb15" : "transparent",
+            }}
+          >
+            {hideIrrelevant ? "恢复显示" : `暂时隐藏这 ${unlikely} 条`}
+          </button>
+        </p>
+      )}
 
       {/*
         时效筛选的副作用必须说出来。用户勾了「一周内」却看到一批资料，
@@ -602,6 +652,24 @@ function ResultList({
                           }
                         >
                           · 同源转载
+                        </span>
+                      )}
+                      {/*
+                        疑似不相关。**只标记，链接照样能点、照样进报告和下载包。**
+                        判定依据放在悬浮里 —— 用户必须能自己核实这一判，
+                        否则一个说不清理由的「不相关」标签只能让人困惑。
+                      */}
+                      {r.relevance?.verdict === "unlikely" && (
+                        <span
+                          style={{ color: "var(--warn, #d29922)" }}
+                          title={
+                            `为什么标它：${r.relevance.reason}\n` +
+                            `（判定来源：${r.relevance.source === "llm" ? "模型" : "本地规则"}）\n\n` +
+                            "这只是「可能不是你要找的东西」，不是「内容有问题」——\n" +
+                            "内容对不对，这个工具不判断。资料仍然保留在报告与下载包里。"
+                          }
+                        >
+                          · 疑似不相关
                         </span>
                       )}
                       {doc && <BodyBadge doc={doc} />}

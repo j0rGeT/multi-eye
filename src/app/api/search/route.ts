@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import type {
+  Relevance,
   SearchEvent,
   SiteKey,
   SortMode,
@@ -112,6 +113,17 @@ export async function POST(req: NextRequest) {
         emit({ type: "provider", log: entry });
       },
     });
+
+    /*
+      判定单独发一个事件，放在 `done` 之前。
+
+      结果列表在上面 `onSiteDone` 里就一条条冒出来了，而判定要等模型几秒 ——
+      与其把结果扣住等判定，不如让用户先看到列表、徽章随后补上。这也正是
+      流式的本意：能先给的先给。
+    */
+    const verdicts: Record<string, Relevance> = {};
+    for (const r of results) if (r.relevance) verdicts[r.id] = r.relevance;
+    emit({ type: "relevance", verdicts });
 
     // 落盘完整快照。文档为空 —— 正文抓取是独立的一步，由 /api/fetch 触发，
     // 这样用户可以只搜不抓，避免为不需要的资料付出抓取成本。
