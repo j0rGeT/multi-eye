@@ -31,25 +31,14 @@ import type {
   GraphNode,
   Topic,
 } from "@/core/types";
-import { config } from "@/core/env";
-import { directFetch, withTimeout } from "@/core/fetch/agent";
+import { chatJson, type ChatMessage } from "@/core/llm/chat";
 import { docId, kwId } from "./heuristic";
 
 /**
- * 走 OpenAI 协议的 /chat/completions，而不是某家的专有 SDK。
- *
- * 代价与收益都摆在这里：结构化输出只能靠 response_format:{type:"json_object"}
- * 加「把要的形状写进提示词」，再拿 zod 自己校验 —— 比原生 structured output
- * 少一层保证，所以下面有两轮问答兜底。换来的是一行环境变量就能换服务商。
- *
- * 两件实测出来的事：
- *
- *  - **它是推理模型。** 返回里 content 之外还有 reasoning_content，思维链和
- *    正文共享 max_tokens。额度给小了（试过 200）思维链会把额度吃光，
- *    content 是空字符串、finish_reason 是 "length" —— 看起来像模型哑了。
- *    所以 llmMaxTokens 默认给 32768，并且单独把这种情况翻译成一句人话。
- *  - **json_object 保证的是语法不是形状。** 少一个数组、把 weight 写成字符串
- *    都会被放行。这是校验和重问存在的理由。
+ * 调用本身（协议选择、推理模型的额度陷阱、json_object 只保证语法不保证形状、
+ * 为什么走 directFetch 而非代理）全部在 `@/core/llm/chat` —— 查询分析与相关性
+ * 判定共用同一份，这里只负责**本路径特有的东西**：送哪些资料、要什么形状、
+ * 拿到之后怎么装成 GraphModel。
  */
 
 /** 一次请求最多送几篇资料。超出的按「信息量」排序后截断。 */
@@ -110,17 +99,14 @@ export async function buildLlmGraph(
   return assemble(topic, docs, picked, extracted, Date.now() - started);
 }
 
-// ─────────────────────────── 调用与校验 ───────────────────────────
-
-type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
+// ─────────────────────────── 调用 ───────────────────────────
 
 /**
- * 抽取，最多问两轮。
+ * 抽取。发一次、校验、不合格就带着模型自己那份 JSON 返修一次 ——
+ * 那一轮返修的机制在 `chatJson` 里，这里只管「送什么、要什么形状」。
  *
- * 第二轮不是「重试」而是「返修」：把校验失败的原话连同模型自己写的那份 JSON
- * 一起发回去，让它改。JSON mode 只保证括号对得上，保证不了 relations 里引用的
- * 实体都存在、weight 是数字。返修一次的成功率高得不成比例，而失败时这一轮
- * 的代价只是再一次调用 —— 比让整张图退回启发式便宜。
+ * 两次都不合格就抛错，由 `buildLlmGraph` 的调用方退回启发式路径 ——
+ * 比让整张图带着一堆悬空边画出来便宜。
  */
 async function extract(
   topic: Topic,
@@ -132,120 +118,7 @@ async function extract(
     { role: "user", content: userPrompt(topic, picked) },
   ];
 
-  let why = "";
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const content = await chat(messages, signal);
-    const outcome = validate(content);
-    if (outcome.ok) return outcome.data;
-
-    why = outcome.why;
-    if (attempt === 0) {
-      messages.push({ role: "assistant", content });
-      messages.push({
-        role: "user",
-        content:
-          `上面的 JSON 不符合要求的形状：${why}\n` +
-          "请只输出修正后的 JSON 对象本身，不要解释、不要 Markdown 代码块。",
-      });
-    }
-  }
-
-  throw new Error(`模型返回的 JSON 不符合结构：${why}`);
-}
-
-type Validated =
-  | { ok: true; data: ExtractionResult }
-  | { ok: false; why: string };
-
-function validate(content: string): Validated {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(stripFence(content));
-  } catch (err) {
-    return {
-      ok: false,
-      why: `不是合法 JSON（${err instanceof Error ? err.message : String(err)}）；` +
-        `开头是 ${content.slice(0, 80)}`,
-    };
-  }
-
-  const parsed = Extraction.safeParse(raw);
-  if (parsed.success) return { ok: true, data: parsed.data };
-
-  // zod 的完整 issue 列表太长，进不了提示词；头三条足够定位问题
-  const why = parsed.error.issues
-    .slice(0, 3)
-    .map((i) => `${i.path.join(".") || "(根)"}: ${i.message}`)
-    .join("；");
-  return { ok: false, why };
-}
-
-/**
- * 有些兼容端点会无视 response_format 把 JSON 包在 ```json 里。
- * 与其把这一条写进「已知问题」，不如剥掉三个反引号。
- */
-function stripFence(s: string): string {
-  const t = s.trim();
-  if (!t.startsWith("```")) return t;
-  return t.replace(/^```[a-zA-Z]*\s*/, "").replace(/```$/, "").trim();
-}
-
-/** 发一次 /chat/completions，把正文取回来。 */
-async function chat(
-  messages: ChatMessage[],
-  signal?: AbortSignal,
-): Promise<string> {
-  const { signal: s, release } = withTimeout(signal, config.llmTimeoutMs, "LLM 请求");
-
-  try {
-    // directFetch 而不是 httpFetch：见 env.ts 里 describeLlmChain 的注释
-    const res = await directFetch(`${config.llmBaseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.llmApiKey}`,
-      },
-      body: JSON.stringify({
-        model: config.llmModel,
-        messages,
-        response_format: { type: "json_object" },
-        temperature: 0.2,
-        max_tokens: config.llmMaxTokens,
-        stream: false,
-      }),
-      signal: s,
-    });
-
-    const body = await res.text();
-    if (!res.ok) {
-      // 把状态码和响应体一起带出去：上层要靠 401/429 分类降级原因，
-      // 而「HTTP 400」这四个字对用户没有任何信息量。
-      throw new Error(
-        `HTTP ${res.status}：${body.replace(/\s+/g, " ").slice(0, 300)}`,
-      );
-    }
-
-    const data = JSON.parse(body) as {
-      choices?: { message?: { content?: string }; finish_reason?: string }[];
-    };
-    const choice = data.choices?.[0];
-    const content = choice?.message?.content ?? "";
-
-    if (!content.trim()) {
-      // 实测：额度被思维链吃光时就是这个样子，finish_reason 是 "length"
-      if (choice?.finish_reason === "length") {
-        throw new Error(
-          `输出被 max_tokens=${config.llmMaxTokens} 截断，正文为空。` +
-            "该模型先输出思维链且与正文共享额度，把 LLM_MAX_TOKENS 调大即可。",
-        );
-      }
-      throw new Error("模型返回了空内容");
-    }
-
-    return content;
-  } finally {
-    release();
-  }
+  return chatJson(Extraction, messages, { signal });
 }
 
 // ─────────────────────────── 输入准备 ───────────────────────────
