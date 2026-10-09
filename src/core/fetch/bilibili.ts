@@ -28,6 +28,7 @@
  */
 
 import type { DocImage } from "@/core/types";
+import { FULL_BODY_CHARS } from "@/core/quality";
 import { directFetch, withTimeout } from "./agent";
 import { limiter, withRetry } from "@/core/limit";
 
@@ -35,6 +36,15 @@ const API = "https://api.bilibili.com";
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+/**
+ * 用不用接口结果的下限：简介 + 章节 + 字幕合计不到 30 字，就退回搜索摘要。
+ *
+ * 这个数**只在这里用**，所以没有上提到 `quality.ts`：它回答的是抓取策略
+ * 问题（「接口这趟值不值得采信」），不是质量分级问题。而 `FULL_BODY_CHARS`
+ * 是跨模块共享的「正文完整」线，那个才必须只有一处定义。
+ */
+const MIN_BODY_CHARS = 30;
 
 /** 接口请求并发。B 站风控对突发流量敏感，宁少勿多。 */
 const gate = limiter("bilibili:api", 3);
@@ -47,31 +57,101 @@ export function isBilibiliVideoUrl(url: string): boolean {
 export type BilibiliId = { key: "bvid" | "aid"; value: string };
 
 /**
+ * **有正文**的 B 站路径。
+ *
+ *   - `/video/`  —— 视频，走接口
+ *   - `/read/cv…` —— 专栏，是真的文章
+ *   - `/opus/…`   —— 新版图文，实测正文完整（1278 字的散文，不是推荐位）
+ *
+ * 这个名单是**实测验出来的**，不是照着目录树抄的。判定方式很直接：把这些
+ * 路径的页面喂给 Readability，看抽出来的到底是不是正文。
+ */
+const CONTENT_PATH = /\/(video|read|opus)\//;
+
+/** `/video/BV1kAH16WERt/`、`/av116883609164003` 这类路径里的 id。 */
+const BV_IN_PATH = /\/(BV[0-9A-Za-z]{10})/;
+const AV_IN_PATH = /\/av(\d+)/i;
+
+/**
  * 从各种 URL 形态里取视频标识。
  *
- * 站内链接会长成 /video/BV1kAH16WERt/、带语言前缀的 /tr/video/BV…、
- * 以及老式的 /video/av116883609164003（这些在搜索结果里都真的出现过）。
- * 只认 /video/ 路径：专栏是 /read/cv…，那是有正文的页面，该走 Readability。
+ * 三种来源，按可信度排序：
+ *
+ *  1. **路径里的 `/video/`** —— 站内链接会长成 `/video/BV1kAH16WERt/`、
+ *     带语言前缀的 `/tr/video/BV…`，以及老式的 `/video/av116883609164003`
+ *     （这些在搜索结果里都真的出现过）
+ *  2. **query 里的 `bvid` / `oid`** —— 合集页 `/list/…?bvid=BV…&oid=…`
+ *     指向的是**这个页面当下在放的那个视频**。实测 14 条 `/list/` 里 9 条
+ *     带着 bvid；顺着它去拿那个视频的真实内容，比把整页当垃圾丢掉强得多
+ *  3. 其余 → 没有 id，交给 `isBilibiliNonContentUrl` 处置
+ *
+ * 专栏 `/read/cv…` 与图文 `/opus/…` 在有正文的路径名单里，**不参与** query
+ * 兜底 —— 它们自己就是文章，不该被 query 里某个 id 抢去走视频接口。
  */
 export function bilibiliVideoId(url: string): BilibiliId | null {
-  let path: string;
+  let u: URL;
   try {
-    const u = new URL(url);
-    if (!/(^|\.)bilibili\.com$/.test(u.hostname)) return null;
-    path = u.pathname;
+    u = new URL(url);
   } catch {
     return null;
   }
+  if (!/(^|\.)bilibili\.com$/.test(u.hostname)) return null;
 
-  if (!path.includes("/video/")) return null;
+  const path = u.pathname;
 
-  const bv = path.match(/\/(BV[0-9A-Za-z]{10})/);
-  if (bv) return { key: "bvid", value: bv[1] };
+  if (path.includes("/video/")) {
+    const bv = path.match(BV_IN_PATH);
+    if (bv) return { key: "bvid", value: bv[1] };
+    const av = path.match(AV_IN_PATH);
+    if (av) return { key: "aid", value: av[1] };
+    return null;
+  }
 
-  const av = path.match(/\/av(\d+)/i);
-  if (av) return { key: "aid", value: av[1] };
+  // 专栏与图文是有正文的页面，不走视频接口
+  if (CONTENT_PATH.test(path)) return null;
+
+  const bvid = u.searchParams.get("bvid");
+  if (bvid && /^BV[0-9A-Za-z]{10}$/.test(bvid)) return { key: "bvid", value: bvid };
+
+  const oid = u.searchParams.get("oid");
+  if (oid && /^\d+$/.test(oid)) return { key: "aid", value: oid };
 
   return null;
+}
+
+/**
+ * 这个 URL 是不是**B 站上抓不到正文、又没有可救的视频 id**的页面。
+ *
+ * ── 为什么需要它 ──
+ *
+ * `bilibiliVideoId` 认不出来的 B 站页面会全部掉进三级「HTTP + Readability」。
+ * 而在这些页面上，Readability 眼中的「主内容」是侧栏的「接下来播放」推荐
+ * 列表 —— 一千多字里没有一句是这个页面的内容。它会带着 `error: undefined`
+ * 混进语料，看起来和一篇正常资料一模一样（样本见 `boilerplate.ts` 头注释）。
+ *
+ * 调用点必须**先问 `bilibiliVideoId`**：能救回的（`/list/…?bvid=`）走接口，
+ * 救不回的才落到这里。剩下的是真正没有正文可抓的页面 —— `/cheese/play/`
+ * 这种付费课程落地页（实测只有一句课程简介 + 购买/目录骨架），以及
+ * `space.` / `live.` 子域。
+ *
+ * 拦在**抓取之前**而不是靠内容检测兜底，有两个理由：
+ *
+ *  1. 这些路径本来就**没有正文可抓**，白跑一趟 HTTP 只是给 B 站添流量
+ *  2. 内容检测（`boilerplateReason`）是通用兜底，它认的是「文本形状」；
+ *     这里是结构性事实（这个页面类型根本不存在正文），能给出更准的错因
+ *
+ * 两层都留着：这一层省掉一次注定失败的请求，那一层挡住其它站点的同类污染。
+ */
+export function isBilibiliNonContentUrl(url: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    // 解析不出来就交给后面的通用链路，不在这里替它下结论
+    return false;
+  }
+  if (!/(^|\.)bilibili\.com$/.test(u.hostname)) return false;
+  return !CONTENT_PATH.test(u.pathname);
 }
 
 export interface BilibiliResult {
@@ -205,7 +285,37 @@ export async function fetchBilibiliVideo(
    * 同样是完整的资料。
    */
   const body = [desc, meta.chapters.join("\n"), transcript].filter(Boolean).join("\n").trim();
-  const substantive = body.length >= 30;
+
+  /**
+   * ── 两段式判定（P11）──
+   *
+   * 原先只有一道 `body >= 30`。实测下来这道闸太松：接口返回的文档里，
+   * **没有错误但也不到 300 字**的那一批有 41 篇，正文全是「UP主 + 标签 +
+   * 一句简介」，中位数一百多字 —— 它们却因为 `error` 为空，看起来和一篇
+   * 完整资料一模一样，`bodyGrade` 判 `thin` 甚至够进图。
+   *
+   * 但**不能直接把门槛抬到 300**：那样这些视频会退回搜索摘要，而摘要的信息
+   * 比接口给的还少 —— 那是用更差的数据换一个更干净的数字，不划算。
+   *
+   * 所以拆成两问：
+   *
+   *   1. `substantive`（`>= MIN_BODY_CHARS`）—— **要不要用接口结果**。
+   *      没到就退回摘要，行为不变。
+   *   2. `error` —— **这段正文算不算数**。够 30 字就产出文档、把抓到的
+   *      简介和标签如实留着；但不到 `FULL_BODY_CHARS`（= `quality.ts` 的
+   *      「正文完整」线）时写明「没有字幕，只有简介」。
+   *
+   * 这样既不丢数据（文本原样保留，用户还能看到），又让下游三处 —— 拓扑图、
+   * 下载包、界面分级 —— 自动得到正确判断，**不需要新增任何字段**。
+   */
+  const substantive = body.length >= MIN_BODY_CHARS;
+
+  let error: string | undefined;
+  if (!substantive) {
+    error = "该视频没有可用的字幕与简介，仅有标题与标签";
+  } else if (body.length < FULL_BODY_CHARS) {
+    error = `该视频没有可用字幕，正文仅有简介与标签（${body.length} 字）`;
+  }
 
   return {
     text: composeText(meta),
@@ -215,9 +325,7 @@ export async function fetchBilibiliVideo(
     publishedAt: view.pubdate ? new Date(view.pubdate * 1000).toISOString() : undefined,
     images: view.pic ? [{ url: normalizeUrl(view.pic), alt: title }] : [],
     substantive,
-    error: substantive
-      ? undefined
-      : "该视频没有可用的字幕与简介，仅有标题与标签",
+    error,
   };
 }
 

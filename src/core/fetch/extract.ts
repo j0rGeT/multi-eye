@@ -16,9 +16,14 @@ import type { Document, ExtractMethod, SearchResult } from "@/core/types";
 import { config } from "@/core/env";
 import { fetchHtml } from "./http";
 import { extractWithReadability, looksLikeCode, looksLikeSpa } from "./readability";
+import { boilerplateReason } from "./boilerplate";
 import { fetchWithBrowser, isPlaywrightAvailable } from "./playwright";
 import { fetchTranscript, isYoutubeUrl } from "./youtube";
-import { fetchBilibiliVideo, isBilibiliVideoUrl } from "./bilibili";
+import {
+  fetchBilibiliVideo,
+  isBilibiliNonContentUrl,
+  isBilibiliVideoUrl,
+} from "./bilibili";
 import { limiter } from "@/core/limit";
 
 export interface ExtractOptions {
@@ -127,6 +132,30 @@ export async function extractOne(
     });
   }
 
+  /**
+   * B 站的其它页面类型：**在发请求之前就拦掉**。
+   *
+   * 能走到这里说明上面那条 `isBilibiliVideoUrl` 没认出视频 id。但要注意它
+   * 已经比以前宽了：`/list/…?bvid=BV…` 这种合集页会**顺着 query 里的 bvid
+   * 走上面那条视频接口**去拿真实内容（实测 14 条 /list/ 里 9 条能这么救回来），
+   * 不会落到这里。
+   *
+   * 真正落到这里的是 `/cheese/play/` 这种付费课程落地页、`space.` / `live.`
+   * 子域 —— 它们页面上根本不存在「文章正文」，HTML 主体是推荐位和购买入口，
+   * Readability 抓得又长又像那么回事（实测一千多字，全是侧栏别人的视频标题）。
+   * 它比抓不到更糟：抓不到会退化成摘要并被标注，它却会当成一篇完整资料，
+   * 还因为字多拿到不低的权重。详见 `bilibili.ts` 的 `isBilibiliNonContentUrl`。
+   *
+   * 这里**不退回 Readability 碰运气**，直接给出可解释的失败。
+   */
+  if (isBilibiliNonContentUrl(result.url)) {
+    return fallbackDocument(
+      result,
+      "该 B 站页面类型没有正文可抓（仅视频页 / 专栏 / 图文有）",
+      t0,
+    );
+  }
+
   // ── 三级：HTTP + Readability ──
   const res = await fetchHtml(result.url, { signal });
 
@@ -144,6 +173,33 @@ export async function extractOne(
         "正文疑似为脚本或内联数据，已丢弃",
         t0,
       );
+    }
+
+    /**
+     * 第三道防线：抽到的**不是文章**。
+     *
+     * `looksLikeCode` 防的是「抽到了脚本」，`Extraction.thin` 防的是「没抽到」，
+     * 而这里防的是第三种：**抽到了，但抽错了** —— 页面主体确实是一大块文本，
+     * 只是那块是导航条 / 推荐位。前两道都判不出来（它不是代码，字数也够多）。
+     *
+     * 命中时**不走 `fallbackDocument`**：那会把已经抽到的文本换成搜索摘要，
+     * 反而丢掉了排查线索。改为保留文本、但明确标成 `raw` + error —— 于是它
+     * 自动被 `bodyGrade` 判为 `snippet`，不进拓扑图、不进下载包，而用户和
+     * 开发者都还能在会话里看到「到底抽到了什么」。
+     */
+    const boiler = boilerplateReason(extraction.text);
+    if (boiler) {
+      return buildDoc(result, {
+        method: "raw",
+        text: extraction.text,
+        markdown: extraction.markdown,
+        title: extraction.title || result.title,
+        images: extraction.images,
+        publishedAt: extraction.publishedAt ?? result.publishedAt,
+        lang: extraction.lang,
+        startedAt: t0,
+        error: boiler,
+      });
     }
 
     if (!extraction.thin) {

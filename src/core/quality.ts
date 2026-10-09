@@ -68,6 +68,35 @@ export const BODY_GRADE_LABELS: Record<BodyGrade, string> = {
   snippet: "仅摘要",
 };
 
+/**
+ * 这篇资料够不够格进下载包。
+ *
+ * **不另立判据，就是 `full`** —— 用户对「优质」的定义（正文 ≥300 字且无
+ * 抓取错误）逐字对应 `bodyGrade` 的 `full` 分支。重写一遍条件只会让界面
+ * 上的徽章和包里的内容在某个边界上悄悄对不上。
+ *
+ * 服务端（打包路由）与客户端（下载面板计数）都调这一个函数，所以
+ * 「界面说 16 篇优质」和「包里 16 个正文文件」是**同一个判断**得出的。
+ */
+export function isPackageWorthy(doc: Document): boolean {
+  return bodyGrade(doc) === "full";
+}
+
+/**
+ * 没进包的那些，各自是因为什么。
+ *
+ * 打包页和包内清单都要逐条列出来 —— 用户选的是「保留并标注，但不进包」，
+ * 那么包本身就得讲清楚少了什么、为什么少。这是「绝不静默丢东西」在打包
+ * 这一层的落地。
+ */
+export function whyNotPackaged(doc: Document): string {
+  if (doc.error) return doc.error;
+  if (doc.extractMethod === "raw") return "没有抓到正文，正文是搜索摘要";
+  const chars = doc.text.trim().length;
+  if (chars >= THIN_BODY_CHARS) return `正文偏短（${chars} 字，需 ≥${FULL_BODY_CHARS} 字）`;
+  return `正文几乎为空（${chars} 字）`;
+}
+
 export interface QualitySummary {
   total: number;
   /** 各分级下的篇数。 */

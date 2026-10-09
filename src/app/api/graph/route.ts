@@ -66,9 +66,18 @@ export async function POST(req: NextRequest) {
    * extractMethod 为 'raw' 的文档正文就是搜索摘要（一两句话），把它们放进
    * 语料会同时污染 IDF 和共现：摘要里的词会被当成「这篇文档的内容」，而
    * 实际上它只是搜索页的片段。宁可图小一点，也不要一张由摘要撑起来的假图。
+   *
+   * **`!d.error` 这一条是 P11 补上的。** 光看 `extractMethod` 不够：抓取链里
+   * 有好几处是「保留了抓到的文本，但明确标了失败」—— 比如 B 站视频只有简介
+   * 没有字幕（`bilibili-api` + error），或者抽到的是导航位（`raw` + error）。
+   * 它们的 `extractMethod` 不是 `raw`，光靠上面那个条件会照样混进语料。
+   *
+   * 这里刻意**不**改用 `bodyGrade === "full"`：那会把 `thin`（120~300 字、
+   * 确实是正文只是短）的文档也一起挡在图外，比现状更激进。带 error 才是
+   * 「这篇的内容不可信」的准确判据。
    */
   const usable = session.documents.filter(
-    (d) => d.extractMethod !== "raw" && d.wordCount >= 30,
+    (d) => !d.error && d.extractMethod !== "raw" && d.wordCount >= 30,
   );
 
   if (usable.length === 0) {
