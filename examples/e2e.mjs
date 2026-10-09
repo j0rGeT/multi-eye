@@ -1338,6 +1338,73 @@ try {
       retry.body?.note ?? `resumed=${retry.body?.resumed}`,
     );
   }
+  // ── 9. 只重抓失败和低质的 ────────────────────────────────
+  //
+  // 界面上的入口是 DownloadPanel 里那个按钮，它做的事就是**把低质那几篇的
+  // id 作为 `resultIds` 再发一次 /api/fetch** —— 所以这里钉的是同一条路径。
+  //
+  // 最要紧的一条断言是**「不能变少」**：重抓是为了补齐，如果一次重抓反而
+  // 让某篇本来完整的正文退化成了摘要（站点这次返回了风控页、超时），
+  // 用户就亏了。这种回归不会报错、只会让优质篇数悄悄少几篇，最难发现。
+  step("9. 只重抓失败和低质的（点名 resultIds，不重跑全部）");
+
+  let bodyGrade = null;
+  try {
+    ({ bodyGrade } = await import("../src/core/quality.ts"));
+  } catch (err) {
+    soft("重抓", "能加载 quality.ts", `跳过：当前 Node 不支持直接跑 .ts（${err.message}）`);
+  }
+
+  if (bodyGrade) {
+    const lowQualityIds = documents.filter((d) => bodyGrade(d) !== "full").map((d) => d.id);
+    const fullBefore = documents.filter((d) => bodyGrade(d) === "full").length;
+
+    if (lowQualityIds.length === 0) {
+      soft("重抓", "本次没有低质文档可重抓", "整批都是完整正文 —— 界面上这个按钮同样不会出现");
+    } else {
+      let refetchPlan = null;
+      let refetchedDone = null;
+
+      await sse(
+        `${BASE}/api/fetch`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId, resultIds: lowQualityIds, concurrency: 4 }),
+        },
+        (ev) => {
+          if (ev.type === "plan") refetchPlan = ev;
+          else if (ev.type === "done") refetchedDone = ev;
+        },
+      );
+
+      // 界面送的就是这 N 个 id，服务端收到的目标数应当**恰好**是这些 ——
+      // 多一篇就是「重跑全部」，少一篇就是静默丢东西
+      check(
+        "重抓",
+        "目标数等于低质篇数（既没有重跑全部，也没有漏）",
+        refetchPlan?.total === lowQualityIds.length,
+        `${refetchPlan?.total}/${lowQualityIds.length} 篇`,
+      );
+      check(
+        "重抓",
+        "点名路径不筛相关性（否则「补抓」会被判定结果挡回去）",
+        refetchPlan?.skippedIrrelevant === 0,
+        `skippedIrrelevant=${refetchPlan?.skippedIrrelevant}`,
+      );
+      check("重抓", "重抓有收尾事件（不是跑到一半没了）", Boolean(refetchedDone), "");
+
+      const after = await getJson(`/api/session?id=${sessionId}`);
+      const fresh = after.body?.session?.documents ?? [];
+      const fullAfter = fresh.filter((d) => bodyGrade(d) === "full").length;
+      check(
+        "重抓",
+        "重抓之后完整正文的篇数不下降",
+        fresh.length > 0 && fullAfter >= fullBefore,
+        `${fullBefore} → ${fullAfter}${fullAfter < fullBefore ? " —— 重抓把已经拿到的正文弄丢了" : ""}`,
+      );
+    }
+  }
 } catch (err) {
   results.push({ step: "运行", name: "未捕获的异常", ok: false, detail: String(err) });
   console.log(C.red(`\n运行中断：${err?.stack ?? err}`));

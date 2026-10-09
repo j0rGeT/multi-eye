@@ -249,7 +249,15 @@ export default function Home() {
   }, [query, sites, searching, timeRange, sortMode]);
 
   // ── 抓取 ──
-  const runFetch = useCallback(async () => {
+  /**
+   * @param resultIds 只抓这几条搜索结果。省略则按默认规则抓（排除疑似不相关）。
+   *   显式给出时服务端**原样尊重**，不再做相关性筛选 —— 这正是「只重抓失败
+   *   和低质的」和「手动勾选几条不相关的重抓」共用的恢复路径。
+   *
+   *   注意这个参数**不能**直接挂到 `onClick` 上：React 会把事件对象当第一个
+   *   实参传进来。调用方要么包一层 `() => runFetch()`，要么显式传数组。
+   */
+  const runFetch = useCallback(async (resultIds?: string[]) => {
     if (!sessionId || fetching) return;
 
     abortRef.current?.abort();
@@ -267,7 +275,7 @@ export default function Home() {
     try {
       await postSse<FetchEvent>(
         "/api/fetch",
-        { sessionId },
+        resultIds && resultIds.length > 0 ? { sessionId, resultIds } : { sessionId },
         (e) => {
           switch (e.type) {
             case "plan":
@@ -497,7 +505,9 @@ export default function Home() {
               logs={logs}
               siteCounts={siteCounts}
               documents={documents}
-              onFetch={runFetch}
+              // 包一层：SearchPanel 把这个回调直接挂在 onClick 上，
+              // 不包的话 React 会把 MouseEvent 当成 resultIds 传进去
+              onFetch={() => runFetch()}
               fetching={fetching}
               fetchProgress={fetchProgress}
               fetchNotice={fetchNotice}
@@ -580,7 +590,12 @@ export default function Home() {
         */}
         {sessionId && documents.length > 0 && (
           <div style={{ marginTop: 16 }}>
-            <DownloadPanel sessionId={sessionId} documents={documents} />
+            <DownloadPanel
+              sessionId={sessionId}
+              documents={documents}
+              onRefetch={(ids) => runFetch(ids)}
+              refetching={fetching}
+            />
           </div>
         )}
 

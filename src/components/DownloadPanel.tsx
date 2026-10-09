@@ -23,12 +23,21 @@ import type {
   TaskStatus,
 } from "@/core/types";
 import { getSse } from "@/components/postSse";
-import { BODY_GRADE_LABELS, qualitySummary } from "@/core/quality";
+import { BODY_GRADE_LABELS, bodyGrade, qualitySummary } from "@/core/quality";
 import { docKind } from "@/core/kind";
 
 interface Props {
   sessionId: string | null;
   documents: Document[];
+  /**
+   * 重新抓这几条结果（传的是 `SearchResult.id`，与 `Document.id` 同值）。
+   *
+   * 服务端对显式给出的 `resultIds` **原样尊重**，不再做相关性筛选 —— 这是
+   * 「只重抓失败和低质的」和「手动勾选几条疑似跑题的补抓」共用的那条恢复路径。
+   */
+  onRefetch?: (resultIds: string[]) => void;
+  /** 抓取是否在进行中。用于禁用按钮 —— 抓取与抓取不能并发。 */
+  refetching?: boolean;
 }
 
 const KIND_LABEL: Record<DownloadKind, string> = {
@@ -50,7 +59,12 @@ const ALL_KINDS: DownloadKind[] = ["article", "transcript", "image", "media"];
 /** 列表最多渲染多少行。几百个任务全画出来会明显卡顿，也没人看得过来。 */
 const MAX_ROWS = 200;
 
-export default function DownloadPanel({ sessionId, documents }: Props) {
+export default function DownloadPanel({
+  sessionId,
+  documents,
+  onRefetch,
+  refetching = false,
+}: Props) {
   const [kinds, setKinds] = useState<DownloadKind[]>(["article", "transcript"]);
   const [concurrency, setConcurrency] = useState(3);
   const [job, setJob] = useState<DownloadJob | null>(null);
@@ -282,6 +296,7 @@ export default function DownloadPanel({ sessionId, documents }: Props) {
       */}
       <QualityLine documents={documents} />
       <PackButton sessionId={sessionId} documents={documents} />
+      <RefetchButton documents={documents} onRefetch={onRefetch} busy={refetching} />
 
       {/* ── 选项 ── */}
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -609,6 +624,62 @@ function PackButton({
       </a>
       <div className="dim" style={{ fontSize: 11, marginTop: 5 }}>
         正文与报告**不需要**先跑下载，直接打包；配图和字幕要先跑一次上面的下载才有。
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 「只重抓失败和低质的」。
+ *
+ * 为什么值得单独一个按钮：抓取是这套流程里最慢也最贵的一步（几十秒到几分钟、
+ * 几十次外部请求）。一批 40 条里抓到 22 篇完整正文之后，剩下的 18 篇往往还有
+ * 救 —— 站点抽风、那次超时、当时没配代理。为了这 18 篇把 40 条重跑一遍，
+ * 等于把已经拿到的东西再买一次。
+ *
+ * 只列**文档**，不列「搜到但没抓过」的结果：那些的重抓入口是上方的
+ * 「抓取正文」，两条路径各管一段，混在一起就说不清按钮按下去会发生什么。
+ *
+ * 判据是 `bodyGrade(doc) !== "full"`，与 `QualityLine` 里那句「优质 N 篇」
+ * 同源（同一个 `quality.ts`），所以「重抓 18 篇」与「优质 22 篇 / 共 40 篇」
+ * 加得起来。
+ */
+function RefetchButton({
+  documents,
+  onRefetch,
+  busy,
+}: {
+  documents: Document[];
+  onRefetch?: (resultIds: string[]) => void;
+  busy: boolean;
+}) {
+  const ids = useMemo(
+    () => documents.filter((d) => bodyGrade(d) !== "full").map((d) => d.id),
+    [documents],
+  );
+
+  // 没有可重抓的就整块不出现 —— 一个恒为「0 篇」的按钮只会占位置
+  if (!onRefetch || ids.length === 0) return null;
+
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <button
+        className="btn"
+        style={{ fontSize: 12 }}
+        disabled={busy}
+        onClick={() => onRefetch(ids)}
+        title={
+          "把这 " +
+          ids.length +
+          " 篇重新抓一次（正文不足 300 字、或抓取时报了错）。" +
+          "已经拿到完整正文的那些不会被重跑 —— 也可以在上面勾选具体站点再点「抓取正文」。"
+        }
+      >
+        {busy ? "重抓中…" : `只重抓失败和低质的（${ids.length} 篇）`}
+      </button>
+      <div className="dim" style={{ fontSize: 11, marginTop: 5 }}>
+        抓不到往往不是代码问题（知乎 403、站点风控、没配代理）。重抓之前先看一眼
+        结果列表里那几篇的失败原因，命中的话重抓也不会有变化。
       </div>
     </div>
   );
