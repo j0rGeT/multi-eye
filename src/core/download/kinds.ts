@@ -22,7 +22,7 @@ import { promisify } from "node:util";
 import type { Document, DownloadKind } from "@/core/types";
 import { config, ytdlpCommonArgs } from "@/core/env";
 import { httpFetch } from "@/core/fetch/agent";
-import { SITE_TARGETS } from "@/core/search/sites";
+import { siteLabel } from "@/core/search/sites";
 
 const execFileAsync = promisify(execFile);
 
@@ -131,7 +131,7 @@ async function writeArticle(ctx: RunContext): Promise<number> {
     "---",
     `title: ${JSON.stringify(doc.title)}`,
     `source: ${doc.url}`,
-    `site: ${SITE_TARGETS[doc.site]?.label ?? doc.site}`,
+    `site: ${siteLabel(doc.site)}`,
     ...(doc.author ? [`author: ${JSON.stringify(doc.author)}`] : []),
     ...(doc.publishedAt ? [`published: ${JSON.stringify(doc.publishedAt)}`] : []),
     `fetched: ${doc.fetchedAt}`,

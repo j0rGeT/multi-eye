@@ -43,7 +43,19 @@ const opt = (name, fallback) => {
 
 const BASE = opt("base", "http://localhost:3000").replace(/\/+$/, "");
 const QUERY = opt("query", "露营装备");
-const SITES = opt("sites", "zhihu,bilibili,youtube").split(",").filter(Boolean);
+/*
+  默认站点与应用自己的 DEFAULT_SITES 对齐（含 web）。
+
+  这里原本只跑 zhihu,bilibili,youtube 三家，理由是「专挑最难的」。但三家都是
+  反爬重灾区：知乎游客 403、B站冷门视频没有字幕也没有简介，抓取阶段按
+  FETCH_LIMIT 取前 12 条很可能一条正文都拿不到 —— 于是构图 409、脚本中断，
+  后面导出和下载两步根本没跑到。这条链路的失败原因每次都不一样，全看当天
+  上游给了什么，作为回归门禁不可用。
+
+  加上 web 之后，反爬那三家**照测不误**（下面的站点断言一条没删），
+  同时保证抓取阶段一定有料，门禁的成败只反映代码而不是当天的搜索结果。
+*/
+const SITES = opt("sites", "zhihu,bilibili,youtube,web").split(",").filter(Boolean);
 /** 抓取阶段只抓前 N 条 —— 全量抓一次要几分钟，验证链路不需要那么久。 */
 const FETCH_LIMIT = Number(opt("fetch-limit", 12));
 const WITH_LLM = !flag("no-llm");

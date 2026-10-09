@@ -14,7 +14,7 @@
  */
 
 import type { Document, GraphModel, SearchResult, Session } from "@/core/types";
-import { SITE_TARGETS } from "@/core/search/sites";
+import { siteLabel } from "@/core/search/sites";
 import { clusterColor, clusterIndexMap } from "@/core/graph/palette";
 
 export interface MarkdownOptions {
@@ -527,10 +527,6 @@ function methodName(m: Document["extractMethod"]): string {
  * 注意 UI 的芯片用的是更短的名字（「B 站」而不是「哔哩哔哩」）——
  * 那是空间受限场合的展示名，与报告正文里的正式名是两种用途，不算重复。
  */
-function siteLabel(site: string): string {
-  const t = SITE_TARGETS[site as keyof typeof SITE_TARGETS];
-  return t?.label ?? site;
-}
 
 function formatDateTime(d: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");

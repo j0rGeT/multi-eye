@@ -9,18 +9,9 @@
  */
 
 import type { ProviderLogEntry, SearchResult, SiteKey } from "@/core/types";
+import { SITE_ORDER, siteShortLabel } from "@/core/search/sites";
 import { methodLabel } from "./NodeDetail";
 import type { Document } from "@/core/types";
-
-/** 站点展示名。与 core/search/sites.ts 的注册表保持一致。 */
-export const SITE_LABELS: Record<SiteKey, string> = {
-  zhihu: "知乎",
-  xiaohongshu: "小红书",
-  youtube: "YouTube",
-  x: "X",
-  bilibili: "B 站",
-  web: "全网",
-};
 
 export interface SearchPanelProps {
   query: string;
@@ -54,9 +45,7 @@ export default function SearchPanel(props: SearchPanelProps) {
     onBuildGraph, building, graphError, hasGraph,
   } = props;
 
-  const allSites: SiteKey[] = [
-    "zhihu", "bilibili", "youtube", "xiaohongshu", "x", "web",
-  ];
+  const allSites = SITE_ORDER;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -100,7 +89,7 @@ export default function SearchPanel(props: SearchPanelProps) {
                 }}
                 title="点击切换是否检索该站点"
               >
-                {SITE_LABELS[s]}
+                {siteShortLabel(s)}
                 {count !== undefined && ` ${count}`}
               </button>
             );
@@ -201,7 +190,7 @@ export default function SearchPanel(props: SearchPanelProps) {
                 <span className="mono" style={{ color: "var(--fg-muted)" }}>
                   {l.provider}
                 </span>
-                <span className="dim">@{SITE_LABELS[l.site] ?? l.site}</span>
+                <span className="dim">@{siteShortLabel(l.site)}</span>
                 <span style={{ marginLeft: "auto" }} className="dim">
                   {l.count} 条 · {l.ms}ms
                 </span>
@@ -260,7 +249,7 @@ function ResultList({
               className="dim"
               style={{ fontSize: 11, marginBottom: 6, letterSpacing: "0.05em" }}
             >
-              {SITE_LABELS[site] ?? site} · {items.length}
+              {siteShortLabel(site)} · {items.length}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {items.map((r) => {

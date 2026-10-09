@@ -24,6 +24,7 @@ import type {
   SessionViewState,
   SiteKey,
 } from "@/core/types";
+import { DEFAULT_SITES } from "@/core/search/sites";
 import { postSse } from "@/components/postSse";
 import SearchPanel from "@/components/SearchPanel";
 import GraphView from "@/components/graph/GraphView";
@@ -32,9 +33,7 @@ import DownloadPanel from "@/components/DownloadPanel";
 
 export default function Home() {
   const [query, setQuery] = useState("");
-  const [sites, setSites] = useState<SiteKey[]>([
-    "zhihu", "bilibili", "youtube", "web",
-  ]);
+  const [sites, setSites] = useState<SiteKey[]>(DEFAULT_SITES);
 
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<SearchResult[]>([]);
