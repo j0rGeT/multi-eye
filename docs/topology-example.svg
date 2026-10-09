@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="902" viewBox="0 0 1600 902" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', sans-serif">
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#8b949e"/></marker></defs>
+<rect width="1600" height="902" fill="#0d1117"/>
+<text x="44" y="34" fill="#e6edf3" font-size="21" font-weight="600">露营装备 · 知识拓扑</text>
+<text x="44" y="58" fill="#8b949e" font-size="13">26 节点 · 51 边 · 4 簇 · LLM 语义构图（jieba + TF-IDF + 共现 + Louvain）</text>
+<rect x="44" y="71" width="9" height="9" rx="2" fill="#58a6ff"/>
+<text x="58" y="80" fill="#8b949e" font-size="12">新手露营装备清单</text>
+<rect x="168" y="71" width="9" height="9" rx="2" fill="#3fb950"/>
+<text x="182" y="80" fill="#8b949e" font-size="12">露营方式与出行工具</text>
+<rect x="304" y="71" width="9" height="9" rx="2" fill="#d29922"/>
+<text x="318" y="80" fill="#8b949e" font-size="12">值得一去的露营地</text>
+<rect x="428" y="71" width="9" height="9" rx="2" fill="#bc8cff"/>
+<text x="442" y="80" fill="#8b949e" font-size="12">内容平台与露营创作者</text>
+<line x1="834.1" y1="593.9" x2="906.8" y2="610.7" stroke="#8b949e" stroke-width="4.44" stroke-opacity="0.85" marker-end="url(#arrow)"/>
+<line x1="845.2" y1="702.6" x2="914.5" y2="663.0" stroke="#8b949e" stroke-width="4.24" stroke-opacity="0.85" marker-end="url(#arrow)"/>
+<line x1="908.4" y1="511.0" x2="940.4" y2="564.7" stroke="#8b949e" stroke-width="4.24" stroke-opacity="0.85" marker-end="url(#arrow)"/>
+<line x1="904.8" y1="385.8" x2="806.5" y2="519.3" stroke="#8b949e" stroke-width="3.45" stroke-opacity="0.85" marker-end="url(#arrow)"/>
+<line x1="658.3" y1="354.1" x2="732.6" y2="512.0" stroke="#8b949e" stroke-width="4.04" stroke-opacity="0.85" marker-end="url(#arrow)"/>
+<line x1="569.1" y1="482.1" x2="698.4" y2="545.7" stroke="#8b949e" stroke-width="4.04" stroke-opacity="0.85" marker-end="url(#arrow)"/>
+<line x1="428.9" y1="506.2" x2="564.1" y2="609.0" stroke="#8b949e" stroke-width="2.85" stroke-opacity="0.85" marker-end="url(#arrow)"/>
+<line x1="733.5" y1="213.1" x2="678.4" y2="176.1" stroke="#8b949e" stroke-width="3.84" stroke-opacity="0.85" marker-end="url(#arrow)"/>
+<line x1="547.3" y1="315.3" x2="723.4" y2="271.1" stroke="#8b949e" stroke-width="3.84" stroke-opacity="0.85" marker-end="url(#arrow)"/>
+<line x1="796.1" y1="444.3" x2="926.4" y2="575.6" stroke="#8b949e" stroke-width="3.65" stroke-opacity="0.85" marker-end="url(#arrow)"/>
+<line x1="1042.4" y1="594.8" x2="1088.1" y2="572.0" stroke="#8b949e" stroke-width="3.45" stroke-opacity="0.85" marker-end="url(#arrow)"/>
+<line x1="378.9" y1="650.0" x2="464.5" y2="740.6" stroke="#8b949e" stroke-width="4.24" stroke-opacity="0.85" marker-end="url(#arrow)"/>
+<line x1="618.6" y1="775.1" x2="552.3" y2="777.0" stroke="#8b949e" stroke-width="4.24" stroke-opacity="0.85" marker-end="url(#arrow)"/>
+<line x1="483.4" y1="653.1" x2="493.3" y2="726.8" stroke="#8b949e" stroke-width="4.24" stroke-opacity="0.85" marker-end="url(#arrow)"/>
+<line x1="560.5" y1="212.3" x2="722.3" y2="240.9" stroke="#8b949e" stroke-width="3.05" stroke-opacity="0.85" marker-end="url(#arrow)"/>
+<line x1="1201.5" y1="454.0" x2="1034.8" y2="582.7" stroke="#8b949e" stroke-width="3.05" stroke-opacity="0.85" marker-end="url(#arrow)"/>
+<line x1="388.5" y1="337.5" x2="444.9" y2="332.5" stroke="#8b949e" stroke-width="4.04" stroke-opacity="0.85" marker-end="url(#arrow)"/>
+<line x1="1058.8" y1="350.9" x2="997.9" y2="557.5" stroke="#8b949e" stroke-width="3.84" stroke-opacity="0.85" marker-end="url(#arrow)"/>
+<line x1="1195.4" y1="661.6" x2="1049.0" y2="638.4" stroke="#8b949e" stroke-width="3.84" stroke-opacity="0.85" marker-end="url(#arrow)"/>
+<line x1="1117.4" y1="329.1" x2="1198.3" y2="380.8" stroke="#8b949e" stroke-width="4.04" stroke-opacity="0.85" marker-end="url(#arrow)"/>
+<line x1="1247.9" y1="617.6" x2="1250.6" y2="478.7" stroke="#8b949e" stroke-width="4.04" stroke-opacity="0.85" marker-end="url(#arrow)"/>
+<line x1="648.4" y1="490.4" x2="705.7" y2="533.8" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="967.9" y1="462.0" x2="826.6" y2="541.9" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="1025.0" y1="441.4" x2="827.8" y2="544.1" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="644.5" y1="494.1" x2="771.1" y2="685.0" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="651.6" y1="479.9" x2="829.8" y2="469.3" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="650.2" y1="474.2" x2="888.3" y2="365.5" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="635.7" y1="464.9" x2="636.0" y2="359.1" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="620.1" y1="477.8" x2="573.5" y2="468.9" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="632.7" y1="496.5" x2="615.2" y2="589.4" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="619.8" y1="480.4" x2="439.5" y2="475.9" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="650.3" y1="487.1" x2="910.8" y2="598.5" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="981.4" y1="470.1" x2="979.2" y2="554.6" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="1034.2" y1="449.2" x2="999.5" y2="558.0" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="644.8" y1="467.7" x2="752.3" y2="313.0" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="970.9" y1="442.5" x2="843.3" y2="306.4" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="1026.3" y1="424.7" x2="852.1" y2="296.4" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="649.4" y1="472.7" x2="714.7" y2="433.9" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="625.0" y1="469.0" x2="531.8" y2="366.5" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="635.7" y1="464.9" x2="635.2" y2="199.2" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="1049.3" y1="446.3" x2="1101.4" y2="508.8" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="621.2" y1="487.3" x2="390.6" y2="590.8" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="637.6" y1="496.6" x2="664.5" y2="722.0" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="623.0" y1="490.4" x2="517.9" y2="570.1" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="629.1" y1="495.3" x2="521.8" y2="731.0" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="629.1" y1="466.3" x2="530.8" y2="250.6" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="997.5" y1="451.9" x2="1188.9" y2="424.2" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="1054.9" y1="432.7" x2="1188.5" y2="420.8" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="621.3" y1="474.1" x2="383.8" y2="364.0" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="989.9" y1="440.5" x2="1046.8" y2="345.7" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<line x1="1049.6" y1="446.0" x2="1212.4" y2="630.6" stroke="#30363d" stroke-width="4.64" stroke-opacity="0.35" stroke-dasharray="2 3"/>
+<circle cx="763.5" cy="577.6" r="71.5" fill="#58a6ff" fill-opacity="0.85" stroke="#0d1117"/>
+<text x="763.5" y="664.8" fill="#c9d1d9" font-size="16.6" text-anchor="middle">帐篷</text>
+<circle cx="799.9" cy="728.4" r="51.1" fill="#58a6ff" fill-opacity="0.85" stroke="#0d1117"/>
+<text x="799.9" y="795.2" fill="#c9d1d9" font-size="16.6" text-anchor="middle">露营推车</text>
+<circle cx="881.8" cy="466.3" r="51.1" fill="#58a6ff" fill-opacity="0.85" stroke="#0d1117"/>
+<text x="881.8" y="533.1" fill="#c9d1d9" font-size="16.6" text-anchor="middle">天幕</text>
+<circle cx="935.7" cy="343.9" r="51.1" fill="#58a6ff" fill-opacity="0.85" stroke="#0d1117"/>
+<text x="935.7" y="410.7" fill="#c9d1d9" font-size="16.6" text-anchor="middle">地钉</text>
+<circle cx="636.2" cy="307.0" r="51.1" fill="#58a6ff" fill-opacity="0.85" stroke="#0d1117"/>
+<text x="636.2" y="373.8" fill="#c9d1d9" font-size="16.6" text-anchor="middle">自立型帐篷</text>
+<circle cx="522.4" cy="459.2" r="51.1" fill="#58a6ff" fill-opacity="0.85" stroke="#0d1117"/>
+<text x="522.4" y="526.0" fill="#c9d1d9" font-size="16.6" text-anchor="middle">非自立型帐篷</text>
+<circle cx="605.5" cy="640.5" r="51.1" fill="#3fb950" fill-opacity="0.85" stroke="#0d1117"/>
+<text x="605.5" y="707.4" fill="#c9d1d9" font-size="16.6" text-anchor="middle">房车</text>
+<circle cx="387.4" cy="474.6" r="51.1" fill="#3fb950" fill-opacity="0.85" stroke="#0d1117"/>
+<text x="387.4" y="541.4" fill="#c9d1d9" font-size="16.6" text-anchor="middle">露营车</text>
+<circle cx="977.4" cy="627.0" r="71.5" fill="#58a6ff" fill-opacity="0.85" stroke="#0d1117"/>
+<text x="977.4" y="714.3" fill="#c9d1d9" font-size="16.6" text-anchor="middle">露营装备</text>
+<circle cx="793.7" cy="253.5" r="71.5" fill="#3fb950" fill-opacity="0.85" stroke="#0d1117"/>
+<text x="793.7" y="340.7" fill="#c9d1d9" font-size="16.6" text-anchor="middle">露营</text>
+<circle cx="759.4" cy="407.3" r="51.1" fill="#3fb950" fill-opacity="0.85" stroke="#0d1117"/>
+<text x="759.4" y="474.2" fill="#c9d1d9" font-size="16.6" text-anchor="middle">精致露营</text>
+<circle cx="496.8" cy="328.0" r="51.1" fill="#3fb950" fill-opacity="0.85" stroke="#0d1117"/>
+<text x="496.8" y="394.8" fill="#c9d1d9" font-size="16.6" text-anchor="middle">家庭露营</text>
+<circle cx="635.1" cy="147.1" r="51.1" fill="#3fb950" fill-opacity="0.85" stroke="#0d1117"/>
+<circle cx="1134.8" cy="548.8" r="51.1" fill="#3fb950" fill-opacity="0.85" stroke="#0d1117"/>
+<circle cx="343.1" cy="612.1" r="51.1" fill="#d29922" fill-opacity="0.85" stroke="#0d1117"/>
+<circle cx="670.6" cy="773.7" r="51.1" fill="#d29922" fill-opacity="0.85" stroke="#0d1117"/>
+<circle cx="476.4" cy="601.5" r="51.1" fill="#d29922" fill-opacity="0.85" stroke="#0d1117"/>
+<circle cx="500.2" cy="778.4" r="51.1" fill="#d29922" fill-opacity="0.85" stroke="#0d1117"/>
+<circle cx="509.2" cy="203.2" r="51.1" fill="#bc8cff" fill-opacity="0.85" stroke="#0d1117"/>
+<circle cx="1251.9" cy="415.1" r="62.6" fill="#bc8cff" fill-opacity="0.85" stroke="#0d1117"/>
+<text x="1251.9" y="493.5" fill="#c9d1d9" font-size="16.6" text-anchor="middle">哔哩哔哩</text>
+<circle cx="336.6" cy="342.1" r="51.1" fill="#bc8cff" fill-opacity="0.85" stroke="#0d1117"/>
+<circle cx="1073.6" cy="301.0" r="51.1" fill="#bc8cff" fill-opacity="0.85" stroke="#0d1117"/>
+<circle cx="1246.8" cy="669.7" r="51.1" fill="#bc8cff" fill-opacity="0.85" stroke="#0d1117"/>
+<rect x="620.8" y="465.9" width="29.8" height="29.8" rx="2" fill="#484f58" fill-opacity="0.5" stroke="#6e7681"/>
+<rect x="966.8" y="439.2" width="29.8" height="29.8" rx="2" fill="#484f58" fill-opacity="0.5" stroke="#6e7681"/>
+<rect x="1024.2" y="419.2" width="29.8" height="29.8" rx="2" fill="#484f58" fill-opacity="0.5" stroke="#6e7681"/>
+<text x="44" y="884" fill="#6e7681" font-size="12">来自会话 9IJr2hJST2 · 主题「露营装备」· 12 篇抓取结果中 3 篇进入拓扑</text>
+</svg>

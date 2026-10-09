@@ -11,6 +11,31 @@
    ↓ 下载      并发队列 + 断点续传，SSE 推进度
 ```
 
+## 它长什么样
+
+![露营装备 · 知识拓扑](docs/topology-example.svg)
+
+这张图**不是手画的示意图**，是跑出来的产物：主题「露营装备」，26 个节点
+（23 个概念 + 3 篇资料）、51 条边、4 个簇，走的是 LLM 语义构图。它是
+`GET /api/export/image?sessionId=…` 的输出 —— 也就是你在界面上点「导出」
+会拿到的同一张图，配色和半径算法与前端共用 `core/graph/palette.ts` 和
+`core/graph/geometry.ts`，所以图和界面永远长得一样。
+
+图上能看出几件事：
+
+- **圆圈是概念，方块是资料**。方块刻意不上簇的颜色：一份资料「属于哪个簇」
+  本身就不成立，它跟每个方向都只是相关程度不同
+- **带箭头的实线是 LLM 给的带谓词的边**（「配套使用」而不是「一起出现过」），
+  虚线是统计共现，点线是「这篇资料提到了这个概念」
+- **几个大圆是这个词在这批语料里的分量**（TF-IDF 聚合后开方压缩）
+
+自己生成一张（需要一个已经建过拓扑的会话）：
+
+```bash
+pnpm example:image <sessionId>              # 默认写到 docs/topology-<id>.svg
+pnpm example:image <sessionId> --out docs/my.svg --no-docs
+```
+
 ## 快速开始
 
 ```bash
@@ -117,8 +142,9 @@ src/
 │     ├─ fetch/route.ts       POST → SSE 逐篇回传正文
 │     ├─ graph/route.ts       POST 结果集 → GraphModel
 │     ├─ export/route.ts      GET → report.md
+│     ├─ export/image/route.ts GET → 拓扑图 SVG
 │     ├─ download/route.ts    POST 建任务 / GET SSE 进度
-│     └─ session/route.ts     GET 取回会话（刷新页面后接着用）
+│     └─ session/route.ts     GET 取回会话 / POST 存图的布局（刷新页面后接着用）
 ├─ core/
 │  ├─ types.ts                ★ 全局契约，其余模块都围绕它编程
 │  ├─ env.ts                  配置与可用性探测
@@ -128,14 +154,20 @@ src/
 │  ├─ fetch/                  extract（降级链）/ http / agent（代理）/ readability
 │  │                          / playwright / youtube / bilibili
 │  ├─ graph/                  build（统一入口）/ heuristic / llm / tokenize / communities
-│  │  ├─ export/markdown.ts      GraphModel → Markdown（含 Mermaid）
+│  │                          / palette（配色唯一来源）/ geometry（尺寸唯一来源）
+│  ├─ export/                 markdown.ts（报告）/ svg.ts（拓扑图）
 │  └─ download/               queue（状态机）/ kinds（各类资源的下载器）
-└─ components/                GraphView / SearchPanel / NodeDetail / DownloadPanel
+└─ components/
+   ├─ graph/                  GraphView / GraphToolbar / GraphTooltip / GraphLegend
+   └─ SearchPanel / NodeDetail / DownloadPanel / postSse
 
 examples/
 ├─ e2e.mjs                    全链路验证：断言的 8 步
 ├─ show.mjs                   读会话产物，在终端里看拓扑/抓取质量/报告
+├─ graph-image.mjs            调导出接口，把拓扑图写成 SVG
 └─ README.md                  验证什么、怎么判定「降级」和「失败」
+
+docs/topology-example.svg     README 里那张示例图（由真实会话生成，可复现）
 
 data/sessions/<id>/           运行时产物（gitignore）
 ├─ session.json               主题、结果、正文、图
@@ -183,6 +215,7 @@ pnpm example        # 全链路验证（需 dev 已启动）
 pnpm example:graph  # 看某次会话的拓扑
 pnpm example:docs   # 看某次会话的抓取质量
 pnpm example:report # 看某次会话的 Markdown 报告
+pnpm example:image  # 把某次会话的拓扑导出成 SVG
 
 pnpm searxng:setup  # 首次安装 SearXNG（源码 + venv + settings）
 pnpm searxng:up     # 启动

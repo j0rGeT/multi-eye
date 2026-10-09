@@ -111,12 +111,73 @@ pre {
   font-size: 12px;
 }
 
+/*
+  去掉 max-width: 1400px。力导向图的可读性直接正比于画布面积，在 1440 宽的
+  窗口里居中留白两百多像素、再把图挤进三栏中最小的一栏，是这张图「看着小」
+  的根因。铺满宽度之后同样的窗口图能大一圈。
+*/
 .main {
   flex: 1;
-  padding: 20px;
-  max-width: 1400px;
+  padding: 16px 20px;
   width: 100%;
-  margin: 0 auto;
+}
+
+/*
+  三栏工作区。高度固定在视口内（减去顶栏与上下 padding），这样图能占满剩余
+  的垂直空间，而不是被内容撑成一条扁带 —— 原来图那栏写死 minHeight: 560，
+  在高窗口里就是白白浪费几百像素。
+
+  列宽由 JS 通过 --cols 注入（要支持左右栏折叠），这里只负责布局规则。
+*/
+.workspace {
+  display: grid;
+  grid-template-columns: var(--cols, minmax(280px, 340px) minmax(0, 1fr) minmax(260px, 320px));
+  gap: 16px;
+  align-items: stretch;
+  height: calc(100vh - 112px);
+  min-height: 520px;
+}
+
+/*
+  所有直接子元素，不只是 .panel。
+
+  左栏的根节点是 SearchPanel 内部一个不带 class 的 flex div，它自己再嵌几个
+  .panel —— 只写 `.workspace > .panel` 的话这条规则**根本没落在左栏上**。
+  而网格项的 `min-height` 默认是 auto：内容一长，这一项就顶破定高的行，
+  溢出到工作区外面盖住下面的下载面板，同时把图那栏也一起撑高，图例被推到
+  屏幕外面去。`min-height: 0` 是让定高真正生效的那个开关。
+*/
+.workspace > * {
+  min-height: 0;
+  /* 同理，长 URL 之类的不可断内容会把 280px 的轨道顶宽 */
+  min-width: 0;
+  overflow: auto;
+}
+
+/* 图那栏自己管滚动：Cytoscape 要的是确定的盒子，不是可滚动的内容 */
+.workspace > .graph-panel {
+  padding: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+/*
+  第一条响应式规则。窄屏下三栏并排会把图压到没法看，收成单列、图放最前 ——
+  这张图是主角，不该在手机上任人宰割。
+*/
+@media (max-width: 1100px) {
+  .workspace {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+  .graph-panel {
+    order: -1;
+    height: 70vh;
+  }
+  /* 堆叠之后高度是自然的，不需要也不该内部滚动 */
+  .workspace > * {
+    overflow: visible;
+  }
 }
 
 .panel {
@@ -334,4 +395,217 @@ pre {
   border-radius: 2px;
   background: var(--border-subtle);
   overflow: hidden;
+}
+
+/* ─────────────────────────── 知识拓扑图 ───────────────────────────
+   GraphView 及其三个子组件（工具栏 / 浮层 / 图例）。全部 absolute 叠在
+   Cytoscape 画布上，所以这一层必须是 position: relative 的定位上下文。 */
+
+.graph-canvas {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 420px;
+}
+
+.graph-cy {
+  width: 100%;
+  height: 100%;
+}
+
+/* 框选模式：拖拽是框选而不是平移，光标要说明这一点 */
+.graph-cy.box-select {
+  cursor: crosshair;
+}
+
+/* 全屏时 Cytoscape 拿到的是整屏，背景要跟上，否则默认白底会闪一下 */
+.graph-canvas:fullscreen {
+  background: var(--bg);
+}
+.graph-canvas:fullscreen .graph-cy {
+  min-height: 100vh;
+}
+
+.graph-fs-hint {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  background: rgba(13, 17, 23, 0.85);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 4px 8px;
+  pointer-events: none;
+}
+
+/* ── 工具栏 ── */
+
+.gtool {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px;
+  padding: 4px;
+  max-width: calc(100% - 20px);
+  background: rgba(13, 17, 23, 0.88);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  backdrop-filter: blur(6px);
+  z-index: 2;
+}
+
+.gtool-btn {
+  padding: 5px 9px;
+  font-size: 11px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s;
+}
+.gtool-btn:hover:not(:disabled) {
+  background: #262c36;
+  color: var(--fg);
+}
+.gtool-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+/* 「开着」的按钮：框选、有锁定。状态可见才不会让人怀疑自己有没有点上 */
+.gtool-btn.on {
+  background: var(--accent-dim);
+  border-color: var(--accent-dim);
+  color: #fff;
+}
+
+.gtool-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 3px;
+  background: var(--border-subtle);
+}
+
+/* ── 悬停浮层 ── */
+
+.gtip {
+  position: absolute;
+  z-index: 3;
+  max-width: 240px;
+  padding: 7px 10px;
+  background: rgba(13, 17, 23, 0.96);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  /* 不吃鼠标事件：它跟着光标走，能接收事件就会挡住下面的节点造成抖动 */
+  pointer-events: none;
+}
+
+.gtip-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 4px;
+  overflow-wrap: anywhere;
+}
+
+.gtip-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 10px;
+  align-items: center;
+}
+
+.gtip-kind {
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--fg-muted);
+}
+
+.gtip-foot {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 10px;
+  color: var(--fg-muted);
+}
+
+/* ── 图例 ── */
+
+.glegend {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-width: 240px;
+  max-height: 40%;
+  overflow-y: auto;
+  padding: 5px;
+  background: rgba(13, 17, 23, 0.88);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  backdrop-filter: blur(6px);
+}
+
+.glegend-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 5px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  text-align: left;
+  transition: background 0.12s;
+}
+.glegend-row:hover {
+  background: #262c36;
+}
+.glegend-row.on {
+  border-color: var(--accent-dim);
+}
+
+.glegend-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.glegend-size {
+  font-size: 10px;
+}
+
+/* 折叠左右栏的开关（顶栏里） */
+.toggle-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg-dim);
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.toggle-btn:hover {
+  border-color: #484f58;
+  color: var(--fg-muted);
+}
+.toggle-btn.on {
+  background: var(--bg-elevated);
+  border-color: #484f58;
+  color: var(--fg);
 }

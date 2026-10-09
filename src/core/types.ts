@@ -195,6 +195,22 @@ export interface Topic {
   updatedAt: string;
 }
 
+/**
+ * 用户在这张图上留下的界面状态。
+ *
+ * 放在 Session 而不是 GraphModel：这是**一次会话的界面状态**，不是图的语义。
+ * GraphModel 是启发式与 LLM 两条构图路径共用的契约，不该被 UI 概念污染 ——
+ * 服务端导出 Markdown 时也不需要知道用户把某个节点拖到了哪里。
+ */
+export interface SessionViewState {
+  /** 节点位置，nodeId → {x, y}。用户拖过、或布局算出来的。 */
+  positions?: Record<string, { x: number; y: number }>;
+  /** 被用户锁定（扛得住「重新布局」）的节点 id。 */
+  pinned?: string[];
+  /** 是否显示文档节点。 */
+  showDocuments?: boolean;
+}
+
 /** 一次搜索会话的完整快照，落盘为 data/sessions/<id>/session.json。 */
 export interface Session {
   topic: Topic;
@@ -203,6 +219,8 @@ export interface Session {
   graph?: GraphModel;
   /** 每个 provider 在本次会话中的表现，用于排查「为什么某站点没结果」。 */
   providerLog: ProviderLogEntry[];
+  /** 图上的位置、锁定与显示开关。刷新页面后据此复原。 */
+  viewState?: SessionViewState;
 }
 
 export interface ProviderLogEntry {

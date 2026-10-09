@@ -21,11 +21,12 @@ import type {
   SearchEvent,
   SearchResult,
   Session,
+  SessionViewState,
   SiteKey,
 } from "@/core/types";
 import { postSse } from "@/components/postSse";
 import SearchPanel from "@/components/SearchPanel";
-import GraphView from "@/components/GraphView";
+import GraphView from "@/components/graph/GraphView";
 import NodeDetail from "@/components/NodeDetail";
 import DownloadPanel from "@/components/DownloadPanel";
 
@@ -53,6 +54,16 @@ export default function Home() {
   const [graphError, setGraphError] = useState<string | null>(null);
   const [selected, setSelected] = useState<GraphNode | null>(null);
   const [showDocuments, setShowDocuments] = useState(true);
+
+  /**
+   * 上次离开这张图时的位置与锁定。只在挂载时交给 GraphView 读一次，
+   * 之后由 GraphView 自己维护，保存回来的走 onViewChange。
+   */
+  const [viewState, setViewState] = useState<SessionViewState | undefined>();
+
+  /** 左右两栏的展开状态。收起之后图立刻拿到整行宽度。 */
+  const [leftOpen, setLeftOpen] = useState(true);
+  const [rightOpen, setRightOpen] = useState(true);
 
   const abortRef = useRef<AbortController | null>(null);
   /** 本轮是否已经开始过搜索。用来防止「恢复上次会话」覆盖用户刚发起的新一轮。 */
@@ -90,6 +101,11 @@ export default function Home() {
         setLogs(session.providerLog);
         setGraph(session.graph ?? null);
         setSessionId(session.topic.id);
+        setViewState(session.viewState);
+        // 「显示资料节点」也是会话状态的一部分，一并复原
+        if (session.viewState?.showDocuments !== undefined) {
+          setShowDocuments(session.viewState.showDocuments);
+        }
       } catch {
         // 读不回来就当没这回事，页面照常空白启动
       }
@@ -105,6 +121,24 @@ export default function Home() {
       prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s],
     );
   }, []);
+
+  /**
+   * 保存图上的界面状态。GraphView 已经 debounce 过（800ms），这里直接发。
+   *
+   * 静默失败是刻意的：位置保存只是锦上添花，为了它弹一个错误框打断用户摆图
+   * 是得不偿失。真的没存上，表现只是「下次打开回到上一次的布局」。
+   */
+  const handleViewChange = useCallback(
+    (view: SessionViewState) => {
+      if (!sessionId) return;
+      void fetch("/api/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, viewState: view }),
+      }).catch(() => {});
+    },
+    [sessionId],
+  );
 
   // ── 搜索 ──
   const runSearch = useCallback(async () => {
@@ -124,6 +158,9 @@ export default function Home() {
     setGraph(null);
     setSelected(null);
     setSessionId(null);
+    // 位置是跟着**那张图**走的，换一轮主题就必须丢掉，
+    // 否则新图会沿用上一个主题的坐标（同 id 的节点会被钉在毫不相干的位置）
+    setViewState(undefined);
 
     try {
       await postSse<SearchEvent>(
@@ -233,6 +270,8 @@ export default function Home() {
 
       setGraph(data.graph);
       setShowDocuments(true);
+      // 重构图产出的是一张新的图（节点集合可能完全不同），旧坐标不该沿用
+      setViewState(undefined);
     } catch (err) {
       setGraphError(errText(err));
     } finally {
@@ -276,6 +315,29 @@ export default function Home() {
         <div style={{ flex: 1 }} />
 
         {/*
+          折叠开关放在顶栏而不是各栏自己的标题旁：收起之后那一栏就没了，
+          按钮跟着消失的话，用户就再也找不回来。放顶栏则两个状态都在原位。
+        */}
+        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+          <button
+            type="button"
+            className={`toggle-btn${leftOpen ? " on" : ""}`}
+            onClick={() => setLeftOpen((v) => !v)}
+            title={leftOpen ? "收起左栏，把宽度让给图" : "展开左栏"}
+          >
+            左栏
+          </button>
+          <button
+            type="button"
+            className={`toggle-btn${rightOpen ? " on" : ""}`}
+            onClick={() => setRightOpen((v) => !v)}
+            title={rightOpen ? "收起右栏，把宽度让给图" : "展开右栏"}
+          >
+            右栏
+          </button>
+        </div>
+
+        {/*
           导出用普通链接而不是 fetch + Blob：路由已经带了
           Content-Disposition，浏览器认这个头就会走下载，不需要前端再把
           几十 KB 的文本绕一圈内存。也顺带保住了「在新标签页打开」的退路。
@@ -309,46 +371,64 @@ export default function Home() {
       </header>
 
       <main className="main">
+        {/*
+          三栏工作区。列宽算成 --cols 交给 CSS，因为要支持左右栏折叠 ——
+          收起某一栏时直接从模板里去掉那条轨道，而不是把它压成 0 宽：
+          0 宽的轨道仍然占着一个 gap，两栏都收起来就白扔 32px。
+        */}
         <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "minmax(280px, 340px) minmax(0, 1fr) minmax(260px, 320px)",
-            gap: 16,
-            alignItems: "start",
-          }}
+          className="workspace"
+          style={
+            {
+              "--cols": [
+                leftOpen ? "minmax(280px, 340px)" : null,
+                "minmax(0, 1fr)",
+                rightOpen ? "minmax(260px, 320px)" : null,
+              ]
+                .filter(Boolean)
+                .join(" "),
+            } as React.CSSProperties
+          }
         >
           {/* ── 左栏 ── */}
-          <SearchPanel
-            query={query}
-            onQueryChange={setQuery}
-            sites={sites}
-            onToggleSite={toggleSite}
-            onSearch={runSearch}
-            searching={searching}
-            results={results}
-            logs={logs}
-            siteCounts={siteCounts}
-            documents={documents}
-            onFetch={runFetch}
-            fetching={fetching}
-            fetchProgress={fetchProgress}
-            onBuildGraph={runBuildGraph}
-            building={building}
-            graphError={graphError}
-            hasGraph={graph !== null}
-          />
+          {leftOpen && (
+            <SearchPanel
+              query={query}
+              onQueryChange={setQuery}
+              sites={sites}
+              onToggleSite={toggleSite}
+              onSearch={runSearch}
+              searching={searching}
+              results={results}
+              logs={logs}
+              siteCounts={siteCounts}
+              documents={documents}
+              onFetch={runFetch}
+              fetching={fetching}
+              fetchProgress={fetchProgress}
+              onBuildGraph={runBuildGraph}
+              building={building}
+              graphError={graphError}
+              hasGraph={graph !== null}
+            />
+          )}
 
           {/* ── 中栏：拓扑图 ── */}
-          <div
-            className="panel"
-            style={{ padding: 0, overflow: "hidden", minHeight: 560 }}
-          >
+          <div className="panel graph-panel">
             {graph ? (
+              /*
+                key 绑到会话 id：换一轮主题时不复用这个实例。Cytoscape 实例、
+                位置表、锁定集合都是「一张图」的东西，跨会话复用会把上一个
+                主题的坐标带进来。
+              */
               <GraphView
+                key={sessionId ?? "pending"}
                 graph={graph}
                 selectedId={selected?.id}
                 onSelect={setSelected}
                 showDocuments={showDocuments}
+                initialView={viewState}
+                onViewChange={handleViewChange}
               />
             ) : (
               <div className="empty">
@@ -376,23 +456,25 @@ export default function Home() {
           </div>
 
           {/* ── 右栏：节点详情 ── */}
-          <div className="panel" style={{ padding: 14 }}>
-            <h2>节点详情</h2>
-            {graph ? (
-              <NodeDetail
-                node={selected}
-                graph={graph}
-                documents={documents}
-                onOpenDocument={(doc) =>
-                  window.open(doc.url, "_blank", "noreferrer")
-                }
-              />
-            ) : (
-              <p className="dim" style={{ fontSize: 12 }}>
-                构建拓扑后，点击任意节点查看它关联的原始资料。
-              </p>
-            )}
-          </div>
+          {rightOpen && (
+            <div className="panel" style={{ padding: 14 }}>
+              <h2>节点详情</h2>
+              {graph ? (
+                <NodeDetail
+                  node={selected}
+                  graph={graph}
+                  documents={documents}
+                  onOpenDocument={(doc) =>
+                    window.open(doc.url, "_blank", "noreferrer")
+                  }
+                />
+              ) : (
+                <p className="dim" style={{ fontSize: 12 }}>
+                  构建拓扑后，点击任意节点查看它关联的原始资料。
+                </p>
+              )}
+            </div>
+          )}
         </div>
 
         {/*
