@@ -1,11 +1,25 @@
 /**
  * 抓取降级链编排。
  *
- *   1. YouTube URL      → yt-dlp 字幕（视频的「正文」就是字幕）
- *   2. B站视频 URL      → 公开接口取标题/标签/简介/字幕（**不走页面**）
- *   3. HTTP + Readability → 覆盖大部分博客/新闻/专栏
- *   4. JS 空壳判定命中   → 无头浏览器重试
- *   5. 全部失败          → 退化为搜索摘要（extractMethod: 'raw'）
+ * ── 第一步就是分派：先看这是视频还是图文（`core/kind.ts`）──
+ *
+ *   视频（contentKind === "video"）：
+ *     1. YouTube URL       → yt-dlp 字幕（视频的「正文」就是字幕）
+ *     2. B站视频 URL       → 公开接口取标题/标签/简介/字幕（**不走页面**）
+ *     3. 上面都不中或失败   → 落到下面的图文链，但视频页多半只能拿到简介
+ *
+ *   图文（article / social / unknown）：
+ *     4. B站专栏/图文 URL  → 同样走公开接口（`/read/`、`/opus/` 是正文，
+ *                            不是视频；按站点判会漏掉这一条）
+ *     5. HTTP + Readability → 覆盖大部分博客/新闻/专栏
+ *     6. JS 空壳判定命中    → 无头浏览器重试
+ *
+ *   共同兜底：
+ *     7. 全部失败           → 退化为搜索摘要（extractMethod: 'raw'）
+ *
+ * 「视频还是图文」这个分派**必须按 URL 路径判**（见 `core/kind.ts` 里的
+ * 实测记录）：B 站的 `/read/` 与 `/opus/` 是长文，按站点判会当成视频，
+ * 于是去给一篇没有播放器的文章找字幕。
  *
  * 核心原则：**单篇失败不抛异常，而是产出带 error 的 Document**。
  * 一个主题下有几十篇资料，其中几篇抓不到是常态（知乎不登录、站点下线、
@@ -17,6 +31,7 @@ import { config } from "@/core/env";
 import { fetchHtml } from "./http";
 import { extractWithReadability, looksLikeCode, looksLikeSpa } from "./readability";
 import { boilerplateReason } from "./boilerplate";
+import { contentKind } from "@/core/kind";
 import { fetchWithBrowser, isPlaywrightAvailable } from "./playwright";
 import { fetchTranscript, isYoutubeUrl } from "./youtube";
 import {
@@ -312,7 +327,18 @@ function buildDoc(r: SearchResult, p: DocParts): Document {
     url: r.url,
     title,
     site: r.site,
-    kind: r.site === "youtube" || r.site === "bilibili" ? "video" : "article",
+    /*
+      按 **URL 路径** 判，不按站点判。
+
+      原先写的是 `site === "youtube" || site === "bilibili" ? "video" : "article"`，
+      于是 B 站的专栏（`/read/`）和图文（`/opus/`）被一律标成 video，而
+      我们实测过 `/opus/` 抓到的是真正文。这个字段不是显示用的标签，它决定
+      下游三件事：要不要排「字幕」下载任务、要不要排「媒体」下载任务、
+      进包的哪个目录。判错就会去做一件根本不存在的事。
+
+      判据集中在 `core/kind.ts`（纯函数，零依赖），这里只是调用点。
+    */
+    kind: contentKind(r.site, r.url),
     text,
     markdown: p.markdown.trim() || text,
     excerpt: text.slice(0, 200),

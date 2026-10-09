@@ -110,15 +110,20 @@ pnpm example:docs  <sessionId>               # 逐篇抓取结果与降级原因
 
 `SearchProvider` 适配器按链降级：`Serper? → SearXNG → yt-dlp（YouTube 专用）`。
 
-### 抓取层：分级降级
+### 抓取层：先分派「视频还是图文」，再分级降级
 
-| 级别 | 手段 | 适用 |
-|---|---|---|
-| 1 | yt-dlp 字幕 | YouTube —— 视频的「正文」就是字幕 |
-| 2 | B站公开接口 | B站视频：标题 / UP主 / 分区 / 标签 / 简介 / 字幕 |
-| 3 | HTTP + Readability | 大部分博客、新闻、专栏 |
-| 4 | Playwright 无头浏览器 | JS 空壳站点（需 `ENABLE_PLAYWRIGHT=true`） |
-| 5 | 兜底 | 退化为搜索摘要，`extractMethod: "raw"` |
+第一步是**按 URL 路径**判类型（`src/core/kind.ts`），而不是按站点 —— 因为 B 站的专栏（`/read/`）和图文（`/opus/`）抓到的是**真正文**，按站点判会把它们当成视频，于是去给一篇没有播放器的文章找字幕、排媒体下载、并放进包里的 `视频/`。
+
+| 分派 | 级别 | 手段 | 适用 |
+|---|---|---|---|
+| 视频 | 1 | yt-dlp 字幕 | YouTube —— 视频的「正文」就是字幕 |
+| 视频 | 2 | B站公开接口 | B站视频：标题 / UP主 / 分区 / 标签 / 简介 / 字幕 |
+| 图文 | 3 | B站公开接口 | B站专栏 `/read/`、图文 `/opus/` |
+| 图文 | 4 | HTTP + Readability | 大部分博客、新闻、专栏 |
+| 图文 | 5 | Playwright 无头浏览器 | JS 空壳站点（需 `PLAYWRIGHT_MODE=on-demand`） |
+| 共同 | 6 | 兜底 | 退化为搜索摘要，`extractMethod: "raw"` |
+
+类型判据是 `site + url` 的纯函数，**不读落库的 `kind` 字段**（那只是抓取那一刻的快照，判据一改就过期）。凡是要据此做决定的地方都走 `docKind()` 现算。
 
 **单篇失败不抛异常**，只产出带 `error` 的 Document —— 一个主题下几十篇资料，其中几篇抓不到是常态（站点下线、反爬拦截、内容被删），不该让整批失败。
 

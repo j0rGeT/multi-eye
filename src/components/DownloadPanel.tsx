@@ -24,6 +24,7 @@ import type {
 } from "@/core/types";
 import { getSse } from "@/components/postSse";
 import { BODY_GRADE_LABELS, qualitySummary } from "@/core/quality";
+import { docKind } from "@/core/kind";
 
 interface Props {
   sessionId: string | null;
@@ -666,9 +667,9 @@ function countAvailable(docs: Document[]): Record<DownloadKind, number> {
   return {
     article: docs.filter((d) => d.extractMethod !== "raw" && d.text.length > 0)
       .length,
-    transcript: docs.filter((d) => d.kind === "video" && d.text.length > 0).length,
+    transcript: docs.filter((d) => docKind(d) === "video" && d.text.length > 0).length,
     image: docs.filter((d) => d.images.length > 0).length,
-    media: docs.filter((d) => d.kind === "video").length,
+    media: docs.filter((d) => docKind(d) === "video").length,
   };
 }
 

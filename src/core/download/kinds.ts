@@ -21,6 +21,7 @@ import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
 import type { Document, DownloadKind } from "@/core/types";
 import { config, ytdlpCommonArgs, ytdlpYoutubeArgs } from "@/core/env";
+import { docKind } from "@/core/kind";
 import { httpFetch } from "@/core/fetch/agent";
 import { isYoutubeUrl } from "@/core/fetch/youtube";
 import { renderDocMarkdown, renderDocTranscript } from "@/core/export/docmarkdown";
@@ -62,7 +63,7 @@ export function planFor(doc: Document, kinds: DownloadKind[]): TaskPlan[] {
     }
   }
 
-  if (kinds.includes("transcript") && doc.kind === "video" && doc.text.length > 0) {
+  if (kinds.includes("transcript") && docKind(doc) === "video" && doc.text.length > 0) {
     plans.push({ kind: "transcript", outputPath: `${stem}.txt`, bytesTotal: undefined });
   }
 
@@ -74,7 +75,7 @@ export function planFor(doc: Document, kinds: DownloadKind[]): TaskPlan[] {
     });
   }
 
-  if (kinds.includes("media") && doc.kind === "video") {
+  if (kinds.includes("media") && docKind(doc) === "video") {
     plans.push({ kind: "media", outputPath: `${stem}.media`, bytesTotal: undefined });
   }
 

@@ -696,7 +696,15 @@ try {
   );
 
   const pkList = await listZipEntries(pkBuf);
-  const pkBody = pkList.filter((n) => n.startsWith("正文/"));
+  /*
+    正文文件现在按**内容类型**分目录：`文章/<stem>.md` 与 `视频/<stem>.md`。
+    原先的 `正文/` + `字幕/` + `配图/` 是按产物格式分的，对用户没有意义 ——
+    他要的是「哪些是视频、哪些是文章」。这是**破坏性改名**。
+
+    正则只数**顶层**的 .md，把 `<stem>/NN.jpg` 那层配图排除掉，
+    否则「文件数 == 头」会被配图撑破。
+  */
+  const pkBody = pkList.filter((n) => /^(文章|视频)\/[^/]+\.md$/.test(n));
   const pkIncluded = Number(pkRes.headers.get("x-package-included") ?? "-1");
 
   check("打包", "含 报告.md", pkList.includes("报告.md"), `${pkBuf.length} 字节 · ${pkList.length} 个条目`);
@@ -708,15 +716,29 @@ try {
   );
   check(
     "打包",
-    "正文/ 文件数 == X-Package-Included（与服务端同一判据）",
+    "文章/ + 视频/ 的文件数 == X-Package-Included（与服务端同一判据）",
     pkBody.length === pkIncluded,
-    `正文 ${pkBody.length} vs 头 ${pkIncluded}`,
+    `文章+视频 ${pkBody.length} vs 头 ${pkIncluded}`,
+  );
+  // 目录名必须是且仅是这两个 —— 多出游离的顶层目录就说明分派漏了一处
+  const pkDirs = [...new Set(pkBody.map((n) => n.split("/")[0]))].sort();
+  check(
+    "打包",
+    "正文只落在 文章/ 与 视频/ 下（不再有 正文/ 字幕/ 配图/）",
+    pkDirs.every((d) => d === "文章" || d === "视频") && !pkList.some((n) => /^(正文|字幕|配图)\//.test(n)),
+    `目录：${pkDirs.join(", ") || "无"}`,
   );
   // 全新会话里够格打包的篇数，正是 e2e 前面抓到的那些
   soft(
     "打包",
-    `正文/ 非空 —— ${pkBody.length} 篇`,
+    `文章/ + 视频/ 非空 —— ${pkBody.length} 篇`,
     pkBody.length > 0 ? `${pkBody.length} 篇` : "包内没有正文文件（可能是本轮一篇都没抓到完整正文）",
+  );
+  // 两个目录都出现才算真的分开了；本轮可能一个视频都没抓到，所以是 soft
+  soft(
+    "打包",
+    `文章/ 与 视频/ 都出现 —— ${pkDirs.join(" + ") || "都没有"}`,
+    pkDirs.length === 2 ? "两个目录都有内容" : "本轮只抓到一种类型，无法验证分流",
   );
 
   // ── 6.6 抓取质量回归 ───────────────────────────────────────
@@ -959,6 +981,58 @@ try {
       "参数只含 youtube: 命名空间（可以安全地按站点作用域化）",
       namespaced,
       args.join(" "),
+    );
+  }
+
+  // ── 6.10 视频 / 图文判据 ────────────────────────────────────
+  //
+  // 这条判据原先写死在 `buildDoc` 里，是**按站点**判的
+  // （`site === "youtube" || site === "bilibili" ? video : article`），
+  // 于是 B 站的专栏 `/read/` 与图文 `/opus/` 被标成 video —— 而这两类
+  // 抓到的是**真正文**。错标的代价是下游去给一篇没有播放器的文章排
+  // 「字幕」和「媒体」下载任务，并在包里放进 `字幕/`。
+  //
+  // 所以这里钉的是**按路径判**而不是按站点判。`core/kind.ts` 是零依赖
+  // 叶子模块，可以直接引。
+  step("6.10 视频 / 图文判据（按 URL 路径，不按站点）");
+
+  let contentKind = null;
+  let packageDirFor = null;
+  try {
+    ({ contentKind, packageDirFor } = await import("../src/core/kind.ts"));
+  } catch (err) {
+    soft("类型判据", "能加载 kind.ts", `跳过：当前 Node 不支持直接跑 .ts（${err.message}）`);
+  }
+
+  if (contentKind) {
+    const cases = [
+      // B 站必须按路径分 —— 这是本次修的核心
+      ["bilibili", "https://www.bilibili.com/video/BV1xx411c7mD", "video", "视频页"],
+      ["bilibili", "https://www.bilibili.com/bangumi/play/ep123456", "video", "番剧"],
+      ["bilibili", "https://www.bilibili.com/read/cv1234567", "article", "专栏（真正文）"],
+      ["bilibili", "https://www.bilibili.com/opus/713767524046471239", "article", "图文动态（真正文）"],
+      ["bilibili", "https://space.bilibili.com/123456", "unknown", "个人空间（抓到的是列表）"],
+      ["bilibili", "https://live.bilibili.com/12345", "unknown", "直播间"],
+      // 其它站点
+      ["youtube", "https://www.youtube.com/watch?v=abc", "video", "YouTube 只有视频"],
+      ["zhihu", "https://www.zhihu.com/question/123", "social", "知乎"],
+      ["xiaohongshu", "https://www.xiaohongshu.com/explore/abc", "social", "小红书"],
+      ["web", "https://example.com/blog/post", "article", "普通博客"],
+    ];
+    for (const [site, url, want, note] of cases) {
+      const got = contentKind(site, url);
+      check("类型判据", `${note} → ${want}`, got === want, got === want ? "" : `实得 ${got}`);
+    }
+
+    // 下游目录归属：只有 video 进 视频/，其余一律 文章/
+    check(
+      "类型判据",
+      "包内目录：只有 video 进 视频/，其余归 文章/",
+      packageDirFor("video") === "视频" &&
+        packageDirFor("article") === "文章" &&
+        packageDirFor("social") === "文章" &&
+        packageDirFor("unknown") === "文章",
+      "社交长文与未知类型都归文章侧（它们的正文是文本，进 视频/ 才是错的）",
     );
   }
 

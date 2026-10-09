@@ -20,12 +20,17 @@ import type {
 } from "@/core/types";
 import { SITE_ORDER, providerLabel, siteShortLabel } from "@/core/search/sites";
 import {
+  KIND_FILTER_LABELS,
+  KIND_FILTER_ORDER,
   SORT_LABELS,
   TIME_RANGE_LABELS,
   TIME_RANGE_ORDER,
+  filterByKind,
+  type KindFilter,
 } from "@/core/search/filter";
 import { formatDate, relativeTime } from "@/core/time";
 import { BODY_GRADE_LABELS, bodyGrade } from "@/core/quality";
+import { DOC_KIND_LABELS, contentKind } from "@/core/kind";
 import { relevanceSummary } from "@/core/search/relevance";
 import { formatSignalValue, signalSummary } from "@/core/signals";
 import { methodLabel } from "./NodeDetail";
@@ -449,7 +454,7 @@ export default function SearchPanel(props: SearchPanelProps) {
  * 等价：一条 HN story 的内容可能住在 github.com，按站点归是 GitHub、按来源归是
  * Hacker News。想知道「HN 这个源到底给了什么」就只能看来源视图。
  */
-type GroupBy = "site" | "provider";
+type GroupBy = "site" | "provider" | "kind";
 
 function ResultList({
   results,
@@ -474,15 +479,37 @@ function ResultList({
   */
   const [hideIrrelevant, setHideIrrelevant] = useState(false);
   const { judged, unlikely } = relevanceSummary(results);
-  const visible = hideIrrelevant
-    ? results.filter((r) => r.relevance?.verdict !== "unlikely")
-    : results;
+
+  /*
+    「全部 / 仅视频 / 仅图文」——**默认全部**。
+
+    和上面那个隐藏开关同一立场：筛选是本地视图，默认不该替用户把东西
+    藏起来。要把视频和文章分开看时才点。
+
+    类型是**现算**的：搜索结果还没有 Document（没抓正文），所以只能按
+    `site + url` 推。用的是与抓取链、打包目录同一个 `contentKind`，
+    所以列表里说的「视频」和包里 `视频/` 里的东西一定是一回事。
+  */
+  const [kindFilter, setKindFilter] = useState<KindFilter>("all");
+
+  const visible = filterByKind(
+    hideIrrelevant
+      ? results.filter((r) => r.relevance?.verdict !== "unlikely")
+      : results,
+    kindFilter,
+    (r) => contentKind(r.site, r.url),
+  );
 
   // 融合后的 results 是全局排序的，但用户的心智模型是分桶的，
   // 所以这里按选定的维度重新分。
   const groups = new Map<string, SearchResult[]>();
   for (const r of visible) {
-    const key = groupBy === "site" ? r.site : r.provider;
+    const key =
+      groupBy === "site"
+        ? r.site
+        : groupBy === "provider"
+          ? r.provider
+          : contentKind(r.site, r.url);
     const list = groups.get(key);
     if (list) list.push(r);
     else groups.set(key, [r]);
@@ -505,7 +532,7 @@ function ResultList({
         <h2>搜索结果 · {results.length} 条</h2>
         <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
           <span className="dim" style={{ fontSize: 11 }}>按</span>
-          {(["site", "provider"] as const).map((m) => (
+          {(["site", "provider", "kind"] as const).map((m) => (
             <button
               key={m}
               className="badge"
@@ -513,7 +540,9 @@ function ResultList({
               title={
                 m === "site"
                   ? "按内容所在的站点分组"
-                  : "按检索来源分组 —— 同一条资料可能由不同通道捞到"
+                  : m === "provider"
+                    ? "按检索来源分组 —— 同一条资料可能由不同通道捞到"
+                    : "按内容类型分组：视频 / 图文 / 社交长文"
               }
               style={{
                 cursor: "pointer",
@@ -523,10 +552,54 @@ function ResultList({
                 background: groupBy === m ? "#1f6feb15" : "transparent",
               }}
             >
-              {m === "site" ? "站点" : "来源"}
+              {m === "site" ? "站点" : m === "provider" ? "来源" : "类型"}
             </button>
           ))}
         </div>
+      </div>
+
+      {/*
+        「全部 / 仅视频 / 仅图文」。
+
+        和下面那个相关性筛选同一立场：**默认全部**，筛选只改本地视图。
+        条数直接标在按钮上，用户不用点一遍才知道哪种有多少。
+      */}
+      <div
+        style={{
+          display: "flex",
+          gap: 4,
+          alignItems: "center",
+          margin: "0 0 10px",
+        }}
+      >
+        {KIND_FILTER_ORDER.map((k) => {
+          const n =
+            k === "all"
+              ? results.length
+              : filterByKind(results, k, (r) => contentKind(r.site, r.url)).length;
+          const on = kindFilter === k;
+          return (
+            <button
+              key={k}
+              className="badge"
+              onClick={() => setKindFilter(k)}
+              title={
+                k === "all"
+                  ? "不按类型筛，显示全部结果"
+                  : `${KIND_FILTER_LABELS[k]}（社交长文与未知类型都归在「图文」侧，与下载包的目录划分一致）`
+              }
+              style={{
+                cursor: "pointer",
+                opacity: n === 0 && k !== "all" ? 0.45 : 1,
+                color: on ? "var(--accent)" : "var(--fg-dim)",
+                borderColor: on ? "#1f6feb66" : "var(--border)",
+                background: on ? "#1f6feb15" : "transparent",
+              }}
+            >
+              {KIND_FILTER_LABELS[k]} {n}
+            </button>
+          );
+        })}
       </div>
 
       {/*
@@ -585,8 +658,12 @@ function ResultList({
               className="dim"
               style={{ fontSize: 11, marginBottom: 6, letterSpacing: "0.05em" }}
             >
-              {groupBy === "site" ? siteShortLabel(key) : providerLabel(key)} ·{" "}
-              {items.length}
+              {groupBy === "site"
+                ? siteShortLabel(key)
+                : groupBy === "provider"
+                  ? providerLabel(key)
+                  : (DOC_KIND_LABELS[key as keyof typeof DOC_KIND_LABELS] ?? key)}{" "}
+              · {items.length}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {items.map((r) => {

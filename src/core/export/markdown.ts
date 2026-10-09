@@ -13,7 +13,8 @@
  * 标题、表格、引用块、围栏代码块、Mermaid。不用 HTML 标签和脚注。
  */
 
-import type { Document, GraphModel, SearchResult, Session } from "@/core/types";
+import type { DocKind, Document, GraphModel, SearchResult, Session } from "@/core/types";
+import { DOC_KIND_LABELS, contentKind, docKind } from "@/core/kind";
 import { siteLabel } from "@/core/search/sites";
 import { SORT_LABELS, TIME_RANGE_LABELS } from "@/core/search/filter";
 import { dateCoverage, dateSpan, formatDate, formatDateTime, formatSpan } from "@/core/time";
@@ -179,6 +180,26 @@ function frontmatter(session: Session, now: Date): string {
   return lines.join("\n");
 }
 
+/**
+ * 视频 / 图文 / 社交长文 各有多少。
+ *
+ * 同时接受 `Document`（有 `kind`）与 `SearchResult`（没有，得按 URL 现算）——
+ * 会话里可能一篇正文都没抓，那时只能拿结果列表来数，而不该退化成不显示。
+ */
+function kindBreakdown(items: readonly { site: string; url: string }[]): string {
+  const counts = new Map<DocKind, number>();
+  for (const it of items) {
+    const k = contentKind(it.site, it.url);
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  return (
+    [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, n]) => `${DOC_KIND_LABELS[k]} ${n}`)
+      .join(" · ") || "无"
+  );
+}
+
 function overview(session: Session, graphedCount: number): string {
   const { results, documents, graph } = session;
   const quality = qualitySummary(documents);
@@ -203,6 +224,15 @@ function overview(session: Session, graphedCount: number): string {
         (quality.counts.thin > 0 ? ` · ${quality.counts.thin} 篇偏短` : "") +
         (quality.counts.snippet > 0 ? ` · ${quality.counts.snippet} 篇仅摘要` : ""),
     ],
+    /*
+      视频 / 图文的构成。用户明确要求「视频网站和文章网站内容区分开」，
+      而报告是这件事最该说清楚的地方 —— 只给一个总数，读者没法知道
+      「这 55 条资料里有多少是视频」，也就没法判断这份报告读起来会是
+      一段段文字还是若干个播放页。
+
+      类型是按 URL 现算的（`core/kind.ts`），与下载包的目录划分同源。
+    */
+    ["内容构成", kindBreakdown(documents.length > 0 ? documents : results)],
     ["参与构图", `${graphedCount} 篇`],
     /*
       日期覆盖率与时间跨度摆在概览里，而不是藏在附录。
@@ -508,8 +538,12 @@ function fullSourceList(
           "",
         ]
       : []),
-    hasSignals ? "| # | 标题 | 站点 | 发布 | 正文 | 声量 |" : "| # | 标题 | 站点 | 发布 | 正文 |",
-    hasSignals ? "| --- | --- | --- | --- | --- | --- |" : "| --- | --- | --- | --- | --- |",
+    hasSignals
+      ? "| # | 标题 | 站点 | 类型 | 发布 | 正文 | 声量 |"
+      : "| # | 标题 | 站点 | 类型 | 发布 | 正文 |",
+    hasSignals
+      ? "| --- | --- | --- | --- | --- | --- | --- |"
+      : "| --- | --- | --- | --- | --- | --- |",
   ];
 
   session.results.forEach((r, i) => {
@@ -538,9 +572,12 @@ function fullSourceList(
     // 没有声量的源（搜索引擎给的网页结果）留白，不填 0 —— 0 是「没人看」，
     // 空白是「这个源不给这个数」，两件事
     const signals = hasSignals ? ` | ${escapeCell(signalSummary(r.signals) || "—")}` : "";
+    // 类型现算：搜索结果没有 kind 字段（还没抓正文），按 site+url 推即可 ——
+    // 用的是与抓取链、打包目录同一个 contentKind
+    const kind = DOC_KIND_LABELS[doc ? docKind(doc) : contentKind(r.site, r.url)];
 
     body.push(
-      `| ${i + 1} | ${escapeCell(title)} | ${siteLabel(r.site)} | ${published} | ${content}${signals} |`,
+      `| ${i + 1} | ${escapeCell(title)} | ${siteLabel(r.site)} | ${kind} | ${published} | ${content}${signals} |`,
     );
   });
 

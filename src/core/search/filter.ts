@@ -105,3 +105,41 @@ export function filterByTime<T extends { publishedAt?: string }>(
 
   return { kept, dropped, unknown };
 }
+
+/**
+ * 「全部 / 仅视频 / 仅图文」这组界面筛选项。
+ *
+ * `null` 表示不筛。刻意**不**把 social 与 unknown 单独列出来：用户想做的
+ * 区分是「视频还是文章」，多两档只会让他每次都要多点一次。它们都归到
+ * 「图文」侧，与打包目录的归属（`packageDirFor`）保持同一口径 ——
+ * 界面上看到的分类和包里看到的目录必须是同一件事。
+ */
+export type KindFilter = "all" | "video" | "article";
+
+export const KIND_FILTER_LABELS: Record<KindFilter, string> = {
+  all: "全部",
+  video: "仅视频",
+  article: "仅图文",
+};
+
+export const KIND_FILTER_ORDER: KindFilter[] = ["all", "video", "article"];
+
+/**
+ * 按内容类型筛。
+ *
+ * 拿的是 `contentKind` 的结果而不是原始的 `DocKind`：`social`/`unknown`
+ * 都被并进「图文」，所以这里判的是「是不是视频」而不是精确相等。
+ *
+ * `items` 同时接受 `SearchResult` 和 `Document` —— 前者没有 `kind` 字段
+ * （搜索结果还没抓正文，类型是按 URL 现算的），所以由调用方给 `kindOf`。
+ * 这样同一个函数能服务结果列表和文档列表，不必写两份。
+ */
+export function filterByKind<T>(
+  items: readonly T[],
+  filter: KindFilter,
+  kindOf: (item: T) => string,
+): T[] {
+  if (filter === "all") return [...items];
+  const wantVideo = filter === "video";
+  return items.filter((it) => (kindOf(it) === "video") === wantVideo);
+}

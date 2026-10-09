@@ -11,10 +11,26 @@
  * ── 包里装什么 ──
  *
  *   报告.md              整篇调研报告（含拓扑图与全部来源链接）
- *   正文/<stem>.md       每篇**优质**资料，与 assets 里的字节完全一致
- *   字幕/<stem>.txt      视频字幕（doc.text 就是字幕）
- *   配图/<stem>/NN.jpg   从 assets/<stem>.images/ 拷来（若下载过）
+ *   文章/<stem>.md       每篇**优质**的图文/社交长文
+ *   文章/<stem>/NN.jpg   它的配图（从 assets/<stem>.images/ 拷来）
+ *   视频/<stem>.md       每篇**优质**视频的资料页
+ *   视频/<stem>.txt      字幕（doc.text 对视频就是字幕本身）
+ *   视频/<stem>/NN.jpg   它的封面/截图
  *   未收录.md            被排除的那些，逐条写明为什么
+ *
+ * ── 目录为什么按「文章 / 视频」分（破坏性改名）──
+ *
+ * 原先是 `正文/` + `字幕/` + `配图/`，按**产物的格式**分。那对用户没有
+ * 意义：他想知道的是「这堆东西里哪些是视频、哪些是文章」，而不是
+ * 「哪些是 markdown、哪些是 jpg」。所以改为按**内容类型**分，判据来自
+ * `core/kind.ts` —— 与抓取链、界面、报告同源，不会各说各话。
+ *
+ * 这是**破坏性改名**：读 ZIP 的脚本如果按 `正文/` 取文件，需要改。
+ *
+ * ── 媒体文件（.mp4 等）不在包里 ──
+ *
+ * 媒体体积远超配图，且用户多半只要资料与字幕。它们留在会话目录的
+ * `assets/<stem>.media/` 下，不塞进 ZIP。
  *
  * `未收录.md` 不是可选项。用户对低质资料的选择是「保留并标注，但不进包」，
  * 那么包本身就得说清楚少了什么、为什么少 —— 否则「包里只有 16 篇」和
@@ -28,6 +44,7 @@ import type { Document, Session } from "@/core/types";
 import { assetsDir } from "@/core/store";
 import { isPackageWorthy, whyNotPackaged } from "@/core/quality";
 import { fileStem } from "@/core/download/kinds";
+import { DOC_KIND_LABELS, docKind, packageDirFor } from "@/core/kind";
 import { renderMarkdownReport, reportFileName } from "./markdown";
 import { renderDocMarkdown, renderDocTranscript } from "./docmarkdown";
 
@@ -85,10 +102,21 @@ export async function buildPackage(
 
   for (const doc of included) {
     const stem = fileStem(doc);
-    putText(`正文/${stem}.md`, renderDocMarkdown(doc));
+    /*
+      **按内容类型分目录**（用户明确要求「视频网站和文章网站内容区分开」）。
+
+      一篇资料的全部产物都收在它自己那一侧，所以「这个视频对应哪些文件」
+      不需要靠文件名去猜：`视频/` 下同一个 stem 的 .md / .txt 就是它。
+      类型判据来自 `core/kind.ts`，与抓取链、界面、报告同源。
+
+      图片也放进对应类型的目录（`collectImages` 那边），否则包里会多出
+      一个游离在外的顶层 `配图/`，又要把「视频和文章分开」这件事重新搅混。
+    */
+    const dir = packageDirFor(docKind(doc));
+    putText(`${dir}/${stem}.md`, renderDocMarkdown(doc));
     // 字幕只在视频上有意义；doc.text 对视频就是字幕本身
-    if (doc.kind === "video" && doc.text.trim()) {
-      putText(`字幕/${stem}.txt`, renderDocTranscript(doc));
+    if (docKind(doc) === "video" && doc.text.trim()) {
+      putText(`${dir}/${stem}.txt`, renderDocTranscript(doc));
     }
   }
 
@@ -178,7 +206,8 @@ async function collectImages(
         if (bytes > MAX_IMAGE_BYTES) return { bytes, missing };
         const buf = await readFile(full);
         bytes += buf.byteLength;
-        files[`配图/${stem}/${name}`] = new Uint8Array(buf);
+        // 跟着正文走：文章配图进 文章/，视频封面进 视频/
+        files[`${packageDirFor(docKind(doc))}/${stem}/${name}`] = new Uint8Array(buf);
       } catch {
         // 单张图读不出来不该让整包失败 —— 它已经下到本地了，
         // 用户随时能在会话目录里找到
@@ -230,7 +259,9 @@ function renderExcluded(
     out.push(`## ${reason} —— ${docs.length} 篇`, "");
     for (const d of docs) {
       const title = d.title?.trim() || "(无标题)";
-      out.push(`- [${title}](${d.url}) · ${d.site}`);
+      // 带上类型：正文侧按 文章/视频 分了目录，这里也照同一份判据标注，
+      // 用户扫一眼就知道「少的是几篇图文还是几个视频」
+      out.push(`- [${title}](${d.url}) · ${d.site} · ${DOC_KIND_LABELS[d.kind]}`);
     }
     out.push("");
   }
