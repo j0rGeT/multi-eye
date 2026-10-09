@@ -1036,6 +1036,93 @@ try {
     );
   }
 
+  /*
+    6.11 —— `withTimeout` 的入口同态。
+
+    这里钉的不是「超时能超时」，而是**一个已经 abort 的 signal 传进来时，
+    调用方的截止时间不许被丢掉**。旧实现只给它挂一个 `"abort"` 监听器，
+    而事件早就发生过了，监听器永远不会触发 —— 于是返回的 signal 只剩自己的
+    `ms` 兜底。当一个 deadline 罩住多次调用时（`plan.ts` / `relevance-llm.ts`
+    都是这个形状），第二批起就整个失效。
+
+    这个 bug 肉眼看不出来，而且症状是「偶尔慢几分钟」，不是报错。所以必须有断言。
+  */
+  step("6.11 超时合成的入口同态（已 abort 的 signal 不许丢掉截止时间）");
+
+  let withTimeout = null;
+  try {
+    ({ withTimeout } = await import("../src/core/timeout.ts"));
+  } catch (err) {
+    soft("超时合成", "能加载 timeout.ts", `跳过：当前 Node 不支持直接跑 .ts（${err.message}）`);
+  }
+
+  if (withTimeout) {
+    /** 等 signal abort，最多 cap 毫秒。已在 abort 状态返回 0，等不到返回 -1。 */
+    const untilAborted = (signal, cap) =>
+      new Promise((res) => {
+        if (signal.aborted) return res(0);
+        const t0 = Date.now();
+        const timer = setTimeout(() => res(-1), cap);
+        signal.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer);
+            res(Date.now() - t0);
+          },
+          { once: true },
+        );
+      });
+
+    // (a) 核心回归：传进来的 signal 已经 abort
+    const dead = AbortSignal.timeout(0);
+    await new Promise((r) => setTimeout(r, 20)); // 确保它已经 abort
+    const a = withTimeout(dead, 60_000, "测试");
+    const aMs = await untilAborted(a.signal, 200);
+    a.release();
+    check(
+      "超时合成",
+      "已 abort 的 signal → 立刻同态（不退回 60 秒兜底）",
+      dead.aborted && aMs === 0,
+      aMs === 0 ? "" : `等了 ${aMs}ms 仍未 abort —— 调用方的截止时间被丢掉了`,
+    );
+
+    // (b) 原本的职责不能丢：外部取消要透传
+    const ctl = new AbortController();
+    const b = withTimeout(ctl.signal, 60_000, "测试");
+    const bWasAborted = b.signal.aborted;
+    ctl.abort();
+    const bMs = await untilAborted(b.signal, 200);
+    b.release();
+    check(
+      "超时合成",
+      "外部取消仍然透传（点了取消不该等到超时）",
+      !bWasAborted && bMs >= 0,
+      bMs >= 0 ? `取消后 ${bMs}ms 内 abort` : "200ms 内没有透传",
+    );
+
+    // (c) 没传 signal 时按 ms 超时
+    const c = withTimeout(undefined, 120, "测试");
+    const cMs = await untilAborted(c.signal, 2_000);
+    c.release();
+    check(
+      "超时合成",
+      "没传 signal 时按 ms 超时",
+      cMs >= 100 && cMs < 2_000,
+      `${cMs}ms`,
+    );
+
+    // (d) release() 之后不再超时（定时器确实被清掉了）
+    const d = withTimeout(undefined, 300, "测试");
+    d.release();
+    await new Promise((r) => setTimeout(r, 150));
+    check(
+      "超时合成",
+      "release() 之后不再超时（定时器已清，不会漏）",
+      !d.signal.aborted,
+      "",
+    );
+  }
+
   // ── 7. 下载 ────────────────────────────────────────────────
   step("7. 异步下载队列（SSE 推进度）");
 

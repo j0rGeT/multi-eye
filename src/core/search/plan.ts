@@ -155,7 +155,13 @@ export async function planQueries(
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: userPrompt(raw, sites) },
       ],
-      { signal, maxTokens: PLAN_MAX_TOKENS },
+      /*
+        同时给出 `timeoutMs`：`signal` 是「整个分析」的截止时间，`timeoutMs` 是
+        「这一次 HTTP 调用」的兜底。两个都要写 —— 只给 signal 的话，兜底就退回
+        到 `LLM_TIMEOUT_MS`（默认 300 秒），一旦 signal 那条路出任何意外，用户
+        等到的就是五分钟而不是八秒。两道闸各自能独立生效，才是想要的。
+      */
+      { signal, maxTokens: PLAN_MAX_TOKENS, timeoutMs: PLAN_TIMEOUT_MS },
     );
 
     return {

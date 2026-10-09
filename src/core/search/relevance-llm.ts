@@ -133,7 +133,13 @@ export async function judgeRelevance(
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: userPrompt(plan, batch) },
         ],
-        { signal, maxTokens: MAX_TOKENS },
+        /*
+          `signal` 是罩住**所有批次**的截止时间，`timeoutMs` 是**单次调用**的
+          兜底。两个都要写：只给 signal 的话，兜底会退回到 `LLM_TIMEOUT_MS`
+          （默认 300 秒）—— 那正是「超时就放弃剩余的批次」这句注释曾经不成立的
+          原因（第二批拿到的是已经 abort 的 deadline，见 `core/timeout.ts`）。
+        */
+        { signal, maxTokens: MAX_TOKENS, timeoutMs: TIMEOUT_MS },
       );
 
       for (const v of parsed.verdicts) {

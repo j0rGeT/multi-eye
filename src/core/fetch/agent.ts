@@ -134,30 +134,12 @@ export const directFetch: typeof globalThis.fetch = (async (
 /**
  * 把「调用方的取消」和「本次请求的超时」合成一个 signal。
  *
- * 用 AbortSignal.timeout 单独做不到这件事 —— 那个 signal 没法把外部的 abort
- * 接进来，于是「用户点了取消」会一直等到超时才响应。用完必须 release()，
- * 否则定时器会一直挂着。
+ * 实现挪到了 `core/timeout.ts` —— 那边是**零 import 的叶子模块**，所以
+ * `examples/e2e.mjs` 能直接引它做回归。这里只是转发，让既有的两个调用点
+ * （`llm/chat.ts`、`fetch/bilibili.ts`）继续从同一处取。理由与 `ytdlp-args.ts`
+ * 那次搬迁相同。
  */
-export function withTimeout(
-  signal: AbortSignal | undefined,
-  ms: number,
-  what: string,
-): { signal: AbortSignal; release: () => void } {
-  const ac = new AbortController();
-  const onAbort = () => ac.abort(signal?.reason);
-  signal?.addEventListener("abort", onAbort, { once: true });
-  const timer = setTimeout(
-    () => ac.abort(new Error(`${what}超时（${Math.round(ms / 1000)} 秒）`)),
-    ms,
-  );
-  return {
-    signal: ac.signal,
-    release: () => {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
-    },
-  };
-}
+export { withTimeout } from "@/core/timeout";
 
 function isAbort(err: unknown): boolean {
   return (
