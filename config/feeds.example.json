@@ -1,0 +1,8 @@
+[
+  { "title": "少数派", "url": "https://sspai.com/feed", "enabled": true },
+  { "title": "V2EX", "url": "https://www.v2ex.com/index.xml", "enabled": true },
+  { "title": "InfoQ 中文", "url": "https://www.infoq.cn/feed", "enabled": true },
+  { "title": "博客园", "url": "https://feed.cnblogs.com/blog/sitehome/rss", "enabled": true },
+  { "title": "开源中国", "url": "https://www.oschina.net/news/rss", "enabled": true },
+  { "title": "阮一峰的网络日志", "url": "https://www.ruanyifeng.com/blog/atom.xml", "enabled": true }
+]

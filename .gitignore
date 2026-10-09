@@ -21,6 +21,10 @@ data/
 # 仓库里只保留 settings.yml.example 模板。
 searxng/settings.yml
 
+# RSS 订阅表：用户自己的订阅，不该跟着仓库走。
+# 仓库里只保留 feeds.example.json 模板；代码里另有一份内置默认。
+config/feeds.json
+
 .DS_Store
 *.tsbuildinfo
 

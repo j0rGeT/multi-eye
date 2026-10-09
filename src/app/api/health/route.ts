@@ -9,6 +9,7 @@ import {
   hasSerper,
   hasYtdlp,
 } from "@/core/env";
+import { loadFeeds } from "@/core/search/feedstore";
 
 // 不导出 runtime：Next 16 里 Edge Runtime 已废弃、'nodejs' 是默认值，
 // 文档明确要求移除该导出。force-dynamic 仍有效（未启用 Cache Components）。
@@ -27,6 +28,24 @@ export async function GET() {
     hasYtdlp(),
     checkProxy(),
   ]);
+
+  /*
+    订阅表读一次就够，但**不能因此把它塞进上面那个 Promise.all**：
+    读文件失败时它要让整行变红并给出原因，而不是静默当成「没有订阅」。
+  */
+  const feedState = await loadFeeds().catch(() => null);
+  const enabledFeeds = feedState?.feeds.filter((f) => f.enabled) ?? [];
+  const rss = {
+    ok: enabledFeeds.length > 0,
+    detail:
+      feedState === null
+        ? "订阅表读取失败"
+        : enabledFeeds.length === 0
+          ? "没有启用的订阅"
+          : `${enabledFeeds.length} 条启用${
+              feedState.error ? ` · ${feedState.error}` : ""
+            }`,
+  };
 
   const checks = [
     {
@@ -121,6 +140,20 @@ export async function GET() {
       ok: proxy.ok,
       detail: proxy.ok ? "Atom 公开接口，免 key" : "代理不可达，境外源将同时失败",
       hint: "可选。官方要求请求间隔 ≥3 秒，因此与其它主题源串行受控。",
+    },
+    {
+      id: "rss",
+      /*
+        RSS 是唯一一个**可用性会真的变化**的主题源，所以它必须真去读订阅表，
+        不能像上面三个那样跟着 proxy 走。
+
+        它走国内直连（默认订阅全是国内站），所以和 proxy 无关；
+        影响它的是「有没有启用的订阅」这件事。
+      */
+      required: false,
+      ok: rss.ok,
+      detail: rss.detail,
+      hint: "可选。不能按任意主题搜 —— 只从订阅的站点里捞命中关键词的条目。",
     },
     {
       id: "juejin",

@@ -27,6 +27,7 @@ import { formatDate, relativeTime } from "@/core/time";
 import { BODY_GRADE_LABELS, bodyGrade } from "@/core/quality";
 import { formatSignalValue, signalSummary } from "@/core/signals";
 import { methodLabel } from "./NodeDetail";
+import FeedPanel from "./FeedPanel";
 import type { Document } from "@/core/types";
 
 /** 排序模式的一句话解释 —— 挂在下拉框的 title 上。 */
@@ -130,6 +131,12 @@ export default function SearchPanel(props: SearchPanelProps) {
             );
           })}
         </div>
+
+        {/*
+          订阅源管理。只在勾了 RSS 这个源时才显示 —— 没勾的时候摆一个
+          「订阅管理」在那儿，用户会以为它对所有源都生效。
+        */}
+        {sites.includes("rss") && <FeedPanel />}
 
         {/*
           时效与排序。放在搜索条件里而不是结果之上，是因为它们是**下一次搜索

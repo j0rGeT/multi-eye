@@ -18,6 +18,7 @@ export type SiteKey =
   | "hackernews"
   | "github"
   | "arxiv"
+  | "rss"
   | "web";
 
 /** 实际发出请求的搜索后端。 */
@@ -28,7 +29,8 @@ export type ProviderId =
   | "bilibili"
   | "hackernews"
   | "github"
-  | "arxiv";
+  | "arxiv"
+  | "rss";
 
 // ─────────────────────────── 搜索层 ───────────────────────────
 

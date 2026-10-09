@@ -28,6 +28,7 @@ import type { SearchProvider, SiteKey } from "@/core/types";
 import { HackerNewsProvider } from "./hackernews";
 import { GitHubProvider } from "./github";
 import { ArxivProvider } from "./arxiv";
+import { RssProvider } from "./rss";
 
 export interface TopicTarget {
   /** 这个源由哪个站点开关控制。 */
@@ -37,20 +38,60 @@ export interface TopicTarget {
   ok: boolean;
 }
 
-/**
- * 装配主题源。
- *
- * `ok` 由调用方传入的 `available` 结果决定，而不是在这里 await ——
- * 装配函数保持同步、纯函数式，探测是调用方的事（那边才有并发探测的能力）。
- */
-export function buildTopicProviders(available: Set<string>): TopicTarget[] {
-  const all: { site: SiteKey; provider: SearchProvider; limit: number }[] = [
+/** 主题源清单。顺序即装配顺序。 */
+function allTopicTargets(): { site: SiteKey; provider: SearchProvider; limit: number }[] {
+  return [
     { site: "hackernews", provider: new HackerNewsProvider(), limit: 15 },
     // GitHub 的 limit 给得小：每多要一条不会多花请求（per_page 是一次性的），
     // 但结果太多会把长尾练手仓库混进来，10 条足够覆盖一个主题的主流项目
     { site: "github", provider: new GitHubProvider(), limit: 10 },
     { site: "arxiv", provider: new ArxivProvider(), limit: 10 },
+    /*
+      RSS 给的条数比别的高：它的「命中」本来就是用户自己订阅的内容，
+      信噪比比搜索引擎高得多，多给几条不至于把噪音带进来。
+    */
+    { site: "rss", provider: new RssProvider(), limit: 20 },
   ];
+}
 
-  return all.map((t) => ({ ...t, ok: available.has(t.provider.id) }));
+/**
+ * 装配主题源，`ok` 由调用方给的一份「可用 id 集合」决定。
+ *
+ * 适合调用方已经知道结果、或想手动控制开关的场景（测试、健康检查）。
+ * 正常搜索路径请用 `probeTopicProviders()`。
+ */
+export function buildTopicProviders(available: Set<string>): TopicTarget[] {
+  return allTopicTargets().map((t) => ({
+    ...t,
+    ok: available.has(t.provider.id),
+  }));
+}
+
+/**
+ * 逐个探测主题源的可用性。
+ *
+ * ── 为什么不直接用 `buildTopicProviders(写死的集合)` ──
+ *
+ * 之前这里是 `new Set(["hackernews", "github", "arxiv"])` 这样的常量。
+ * 那三个源的 `available()` 恰好恒为 true，所以看着没问题 —— 但 RSS 不是：
+ * 它的可用性取决于 `config/feeds.json` 里有没有启用的订阅，是一个**会变的
+ * 外部事实**。写死等于假设「订阅表永远非空」，用户把订阅全停用之后，
+ * 这个源还会被拉起来空跑一轮。
+ *
+ * 探测本身很便宜：四个实现里没有一个发网络请求（RSS 只是读一个本地文件），
+ * 所以并发探一遍的代价可以忽略。
+ */
+export async function probeTopicProviders(): Promise<TopicTarget[]> {
+  const all = allTopicTargets();
+  const oks = await Promise.all(
+    all.map(async (t) => {
+      try {
+        return await t.provider.available();
+      } catch {
+        // 探测自己抛错不能让整次搜索挂掉 —— 视作不可用即可
+        return false;
+      }
+    }),
+  );
+  return all.map((t, i) => ({ ...t, ok: oks[i] }));
 }

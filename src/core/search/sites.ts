@@ -173,6 +173,23 @@ export const SITE_TARGETS: Record<SiteKey, SiteTarget> = {
     directOnly: true,
     color: "#b31b1b",
   },
+  /*
+    RSS 订阅。和 HN 一样，domain 留空 —— 条目指向的是少数派、V2EX、
+    博客园这些站，填个 rss 的域名只会让 `resolveSite` 把它们全标错。
+
+    它与其他主题源有个本质差别：**不能按任意主题搜**，只能捞订阅表里
+    恰好命中关键词的条目。这一点必须在界面上讲清楚。
+  */
+  rss: {
+    key: "rss",
+    label: "RSS 订阅",
+    shortLabel: "RSS",
+    domain: "",
+    keyword: "",
+    kind: "article",
+    directOnly: true,
+    color: "#f26522",
+  },
   web: {
     key: "web",
     label: "全网",
@@ -201,6 +218,7 @@ export const DEFAULT_SITES: SiteKey[] = [
   "hackernews",
   "github",
   "arxiv",
+  "rss",
   "web",
 ];
 
@@ -228,6 +246,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   hackernews: "Hacker News",
   github: "GitHub API",
   arxiv: "arXiv",
+  rss: "RSS 订阅",
 };
 
 /** provider 展示名。认不出来则原样返回。 */

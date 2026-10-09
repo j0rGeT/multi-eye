@@ -27,7 +27,7 @@ import { normalizeUrl } from "./normalize";
 import { filterByTime } from "./filter";
 import { signalMagnitude } from "@/core/signals";
 import { isDirectOnly } from "./sites";
-import { buildTopicProviders } from "./registry";
+import { probeTopicProviders } from "./registry";
 
 /**
  * 每个 provider 的并发上限。
@@ -109,8 +109,14 @@ export async function searchAll(
     bilibili.available(),
   ]);
 
-  // 主题源：整次搜索只跑一次，与站点任务并发。见 registry.ts 的说明。
-  const topicTargets = buildTopicProviders(new Set(["hackernews", "github", "arxiv"]));
+  /*
+    主题源：整次搜索只跑一次，与站点任务并发。见 registry.ts 的说明。
+
+    可用性真去探一遍而不是写死 —— RSS 取决于订阅表里有没有启用的条目。
+    探测不发网络请求（最重的 RSS 也只是读一个本地文件），所以放在这里
+    同步等待不会拖慢搜索。
+  */
+  const topicTargets = await probeTopicProviders();
 
   /**
    * 站点专用 provider —— 与通用搜索引擎链是**互补**关系，不是备选关系。
