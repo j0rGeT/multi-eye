@@ -10,10 +10,53 @@ import {
   hasYtdlp,
 } from "@/core/env";
 import { loadFeeds } from "@/core/search/feedstore";
+import { isPlaywrightInstalled } from "@/core/fetch/playwright";
 
 // 不导出 runtime：Next 16 里 Edge Runtime 已废弃、'nodejs' 是默认值，
 // 文档明确要求移除该导出。force-dynamic 仍有效（未启用 Cache Components）。
 export const dynamic = "force-dynamic";
+
+/**
+ * 无头浏览器的健康状态。
+ *
+ * 三种「不可用」的原因必须分开说，它们对用户的含义完全不同：
+ *
+ *   已关闭          他自己选的（`PLAYWRIGHT_MODE=off`），不是故障。
+ *   已启用但没装包  一条命令就能好，所以要给命令。
+ *   已启用且装了包  能用。但浏览器二进制是**另一步**，提示里得留着。
+ *
+ * 这里刻意**不启动浏览器**（理由见 `playwright.ts` 的 `isPlaywrightInstalled`），
+ * 所以最后一种只说「已启用」，不谎称「已可用」。
+ */
+function playwrightCheck(): { ok: boolean; detail: string; hint: string } {
+  const mode = config.playwrightMode;
+
+  if (mode === "off") {
+    return {
+      ok: false,
+      detail: "已关闭（PLAYWRIGHT_MODE=off）",
+      hint: "可选。关掉时 JS 空壳站点只能退化为搜索摘要；改成 on-demand 即可启用。",
+    };
+  }
+
+  const modeLabel = mode === "always" ? "总是渲染每篇" : "按需（仅 JS 空壳页）";
+
+  if (!isPlaywrightInstalled()) {
+    return {
+      ok: false,
+      detail: `已启用但未安装（模式：${modeLabel}）`,
+      hint:
+        "装：pnpm add -D playwright && npx playwright install chromium" +
+        "（浏览器二进制约 150 MB，不入库）。",
+    };
+  }
+
+  return {
+    ok: true,
+    detail: `已启用（模式：${modeLabel}）`,
+    hint: "首次使用前需要 npx playwright install chromium 把浏览器二进制下下来。",
+  };
+}
 
 /**
  * 各后端的可用性总览。
@@ -94,9 +137,7 @@ export async function GET() {
       id: "playwright",
       label: "Playwright 无头浏览器",
       required: false,
-      ok: config.enablePlaywright,
-      detail: config.enablePlaywright ? "已启用" : "未启用",
-      hint: "可选。用于 JS 空壳站点的正文降级抓取。",
+      ...playwrightCheck(),
     },
     /*
       ── 主题源（P8.2）──

@@ -38,6 +38,32 @@ function findYtdlp(): string {
   return candidates.find((p) => existsSync(p)) ?? "yt-dlp";
 }
 
+/**
+ * 无头浏览器的三态开关。
+ *
+ * 原先只有一个 `ENABLE_PLAYWRIGHT` 布尔值，而抓取链真正需要区分的是三种情形：
+ *
+ *   - `off`         **不要**用浏览器。抓取快，SPA 站点退化成摘要。
+ *   - `on-demand`   只在 `looksLikeSpa` 判定为 JS 空壳时才用。**默认。**
+ *   - `always`      每篇都先用浏览器渲染一遍。最准，也最慢，还会显著抬高被目标
+ *                    站点判定为爬虫的概率 —— 只有明确知道自己在抓什么站时才开。
+ *
+ * 默认选 `on-demand` 而不是 `off`：这一级本来就有 `looksLikeSpa` 这道判据挡着，
+ * 没装 Playwright 时它连启动都不会发生（`isPlaywrightAvailable()` 返回 false），
+ * 所以默认开着不会让任何人变慢，而装了的人立刻受益。
+ *
+ * `ENABLE_PLAYWRIGHT=true` 仍然认，映射成 `on-demand` —— 它当年就是这个语义，
+ * 而写成 `always` 会让老用户的抓取突然变慢、变重，那不是「向后兼容」。
+ */
+export type PlaywrightMode = "off" | "on-demand" | "always";
+
+function pickPlaywrightMode(): PlaywrightMode {
+  const raw = (process.env.PLAYWRIGHT_MODE ?? "").trim().toLowerCase();
+  if (raw === "off" || raw === "on-demand" || raw === "always") return raw;
+  if (process.env.ENABLE_PLAYWRIGHT === "true") return "on-demand";
+  return "on-demand";
+}
+
 export const config = {
   searxngUrl: process.env.SEARXNG_URL ?? "http://localhost:8888",
   serperApiKey: process.env.SERPER_API_KEY ?? "",
@@ -70,7 +96,18 @@ export const config = {
   llmMaxTokens: Number(process.env.LLM_MAX_TOKENS ?? 32_768),
   /** 单次 LLM 请求的超时。默认给足 5 分钟：几十篇长文的抽取本来就是慢活。 */
   llmTimeoutMs: Number(process.env.LLM_TIMEOUT_MS ?? 300_000),
-  enablePlaywright: process.env.ENABLE_PLAYWRIGHT === "true",
+  playwrightMode: pickPlaywrightMode(),
+  /*
+    每轮最多用几次无头浏览器。
+
+    没有这道闸，一批 JS 空壳站点会串行跑满整个 `maxDuration` —— 无头浏览器冷启动
+    约 1 秒，每次渲染 3~10 秒，而 `/api/fetch` 一轮典型只抓 12 篇。超额的那几篇
+    **不静默丢弃**，走既有的降级路径并把原因写进 `error`。
+
+    默认 8 是「一轮抓取里值得花浏览器预算的篇数」的量级估计，不是实测出来的 ——
+    真要调，看 `/api/fetch` 的 `done` 事件里 `byMethod.playwright` 与总篇数的比例。
+  */
+  playwrightMaxPagesPerRun: Number(process.env.PLAYWRIGHT_MAX_PAGES_PER_RUN ?? 8),
 
   /*
     ── 搜索条数 ──

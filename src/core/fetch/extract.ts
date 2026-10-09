@@ -48,17 +48,34 @@ export interface ExtractOptions {
   onProgress?: (done: number, total: number, doc: Document) => void;
 }
 
+/**
+ * 一轮抓取里**共享**的配额。
+ *
+ * 目前只有一项：无头浏览器还能开几次。放在这里而不是模块级变量，是因为
+ * 「一轮」的边界就是一次 `extractMany` —— 用模块级的计数器会让配额跨请求
+ * 累积，第二个用户拿到的是一份已经用掉一半的预算，而且永远说不清是谁用掉的。
+ *
+ * 并发任务之间不需要加锁：JS 单线程，`takePlaywrightSlot` 里从检查到扣减
+ * 之间没有 `await`，不存在两篇同时抢到最后一个名额。
+ */
+export interface ExtractBudget {
+  playwrightLeft: number;
+}
+
 export async function extractMany(
   results: SearchResult[],
   opts: ExtractOptions = {},
 ): Promise<Document[]> {
   const concurrency = opts.concurrency ?? 4;
   const gate = limiter("extract", concurrency);
+  const budget: ExtractBudget = {
+    playwrightLeft: config.playwrightMaxPagesPerRun,
+  };
 
   let done = 0;
   const tasks = results.map((r) =>
     gate(async () => {
-      const doc = await extractOne(r, opts.signal);
+      const doc = await extractOne(r, opts.signal, budget);
       done += 1;
       opts.onProgress?.(done, results.length, doc);
       return doc;
@@ -72,11 +89,29 @@ export async function extractMany(
   );
 }
 
+/** 扣一个无头浏览器名额。扣不到返回 false —— 由调用方写进降级原因。 */
+function takePlaywrightSlot(budget: ExtractBudget | undefined): boolean {
+  if (!budget) return true; // 直接调 extractOne 的单篇场景不设限
+  if (budget.playwrightLeft <= 0) return false;
+  budget.playwrightLeft -= 1;
+  return true;
+}
+
 export async function extractOne(
   result: SearchResult,
   signal?: AbortSignal,
+  budget?: ExtractBudget,
 ): Promise<Document> {
   const t0 = Date.now();
+
+  /*
+    「这一级为什么没走」的原因。声明在函数作用域而不是四级那个 if 里面，
+    是因为下面**两条**降级路径（raw 正文、五级兜底）都要用到它。
+
+    静默地少走一级，用户看到的是「这篇抓得不全」，而真实原因是配额用完了或者
+    根本没装 —— 那是两件完全不同的事。
+  */
+  let browserSkip: string | undefined;
 
   // ── 一级：YouTube 字幕 ──
   if (isYoutubeUrl(result.url)) {
@@ -232,49 +267,71 @@ export async function extractOne(
       });
     }
 
-    // ── 四级：JS 空壳 → 无头浏览器 ──
-    if (looksLikeSpa(res.body, extraction) && (await isPlaywrightAvailable())) {
-      const br = await fetchWithBrowser(result.url, { signal });
-      if (br.html) {
-        // 站点专用选择器命中时直接用，比再跑一次 Readability 准。
-        // 但仍要过一遍代码检测：选择器可能框到了一块内联 JSON。
-        if (
-          br.selectorText &&
-          br.selectorText.length > 200 &&
-          !looksLikeCode(br.selectorText)
-        ) {
-          return buildDoc(result, {
-            method: "playwright",
-            text: br.selectorText,
-            markdown: br.selectorText,
-            title: extraction.title || result.title,
-            images: extraction.images,
-            /*
-              别把第一次 HTTP 那趟已经读到的日期丢掉。
+    /*
+      ── 四级：JS 空壳 → 无头浏览器 ──
 
-              这一支换的是正文来源（静态 HTML → 无头浏览器渲染结果），
-              和日期没有关系；`extraction` 是从静态 HTML 解析出来的，
-              它的 publishedAt 与这次替换无关，仍然有效。
-            */
-            publishedAt: extraction.publishedAt ?? result.publishedAt,
-            lang: extraction.lang,
-            startedAt: t0,
-          });
+      要不要试这一级由 `playwrightMode` 决定（三态见 `env.ts` 的注释）：
+      `off` 从不试，`on-demand` 只在 `looksLikeSpa` 判为 JS 空壳时试，
+      `always` 每篇都试。
+
+      不试的原因**必须留下来**：下面两条降级路径会把 `browserSkip` 写进 `error`
+      （声明在函数顶部，见那里的说明）。
+    */
+    const wantsBrowser =
+      config.playwrightMode === "always" ||
+      (config.playwrightMode === "on-demand" &&
+        looksLikeSpa(res.body, extraction));
+
+    if (wantsBrowser && (await isPlaywrightAvailable())) {
+      if (!takePlaywrightSlot(budget)) {
+        browserSkip =
+          `疑似动态渲染，本轮无头浏览器配额（${config.playwrightMaxPagesPerRun} 页）已用完` +
+          `。调大 PLAYWRIGHT_MAX_PAGES_PER_RUN 或减少一次抓取的篇数。`;
+      } else {
+        const br = await fetchWithBrowser(result.url, { signal });
+        if (br.html) {
+          // 站点专用选择器命中时直接用，比再跑一次 Readability 准。
+          // 但仍要过一遍代码检测：选择器可能框到了一块内联 JSON。
+          if (
+            br.selectorText &&
+            br.selectorText.length > 200 &&
+            !looksLikeCode(br.selectorText)
+          ) {
+            return buildDoc(result, {
+              method: "playwright",
+              text: br.selectorText,
+              markdown: br.selectorText,
+              title: extraction.title || result.title,
+              images: extraction.images,
+              /*
+                别把第一次 HTTP 那趟已经读到的日期丢掉。
+
+                这一支换的是正文来源（静态 HTML → 无头浏览器渲染结果），
+                和日期没有关系；`extraction` 是从静态 HTML 解析出来的，
+                它的 publishedAt 与这次替换无关，仍然有效。
+              */
+              publishedAt: extraction.publishedAt ?? result.publishedAt,
+              lang: extraction.lang,
+              startedAt: t0,
+            });
+          }
+          const re = extractWithReadability(br.html, result.url);
+          if (!re.thin) {
+            return buildDoc(result, {
+              method: "playwright",
+              text: re.text,
+              markdown: re.markdown,
+              title: re.title || result.title,
+              images: re.images,
+              author: re.byline ?? result.author,
+              publishedAt: re.publishedAt ?? result.publishedAt,
+              lang: re.lang,
+              startedAt: t0,
+            });
+          }
         }
-        const re = extractWithReadability(br.html, result.url);
-        if (!re.thin) {
-          return buildDoc(result, {
-            method: "playwright",
-            text: re.text,
-            markdown: re.markdown,
-            title: re.title || result.title,
-            images: re.images,
-            author: re.byline ?? result.author,
-            publishedAt: re.publishedAt ?? result.publishedAt,
-            lang: re.lang,
-            startedAt: t0,
-          });
-        }
+        // 浏览器跑了但也没抽出东西 —— 也要说清是「跑了没用」而不是「没跑」
+        browserSkip = "已用无头浏览器渲染，仍没抽到正文";
       }
     }
 
@@ -290,7 +347,9 @@ export async function extractOne(
         publishedAt: extraction.publishedAt ?? result.publishedAt,
         lang: extraction.lang,
         startedAt: t0,
-        error: "正文提取不完整（疑似动态渲染，需启用 Playwright）",
+        error:
+          browserSkip ??
+          "正文提取不完整（疑似动态渲染，需启用 Playwright）",
       });
     }
   }
@@ -298,7 +357,9 @@ export async function extractOne(
   // ── 五级：兜底 ──
   return fallbackDocument(
     result,
-    res.error ?? "未能提取到正文",
+    // 走到这里时 Readability 连 50 字都没拿到；如果无头浏览器那条路也因为
+    // 配额或没装而没走成，那个原因比笼统的「未能提取到正文」有用得多
+    browserSkip ?? res.error ?? "未能提取到正文",
     t0,
   );
 }

@@ -88,7 +88,8 @@ pnpm example:docs  <sessionId>               # 逐篇抓取结果与降级原因
 | `LLM_MAX_TOKENS` | `32768` | 输出上限，见下方「推理模型」一节 |
 | `LLM_TIMEOUT_MS` | `300000` | 单次 LLM 请求超时 |
 | `FETCH_PROXY_URL` | `http://127.0.0.1:6666` | 抓取/下载走的代理（**只对境外站点生效**，国内站点自动直连） |
-| `ENABLE_PLAYWRIGHT` | `false` | JS 空壳站点的无头浏览器降级 |
+| `PLAYWRIGHT_MODE` | `on-demand` | 无头浏览器降级：`off` / `on-demand`（仅 JS 空壳页）/ `always`（每篇都渲染） |
+| `PLAYWRIGHT_MAX_PAGES_PER_RUN` | `8` | 一轮抓取最多用几次无头浏览器，超额不静默丢弃 |
 | `FETCH_TIMEOUT_MS` / `FETCH_MAX_BYTES` | 15s / 5MB | 单页抓取的上限 |
 | `DOWNLOAD_CONCURRENCY` | `3` | 下载队列并发 |
 
@@ -207,7 +208,8 @@ data/sessions/<id>/           运行时产物（gitignore）
 | 知乎返回 403 | 未登录的游客访问被拦，需要 `zh-zse-ck` 签名。直连和走代理都一样，不是代理问题 |
 | 小红书、X 搜索结果为空 | 站内内容不被搜索引擎索引 |
 | B站视频只有标题和标签 | 该视频没有 CC 字幕、简介也是空的。接口已尽力，比拿推荐列表冒充正文诚实 |
-| 覆盖率不高的中文长尾站点 | Playwright 未启用时只能拿到静态 HTML |
+| 覆盖率不高的中文长尾站点 | 没装 Playwright 时只能拿到静态 HTML。`/api/health` 会区分「已关闭」和「已启用但未安装」——两者都不是故障，是配置 |
+| 一篇 SPA 站点没被渲染 | 本轮的无头浏览器配额（默认 8 页）用完了。这一条会写进该篇的 `error`，不会静默降级 |
 
 ## 常用命令
 

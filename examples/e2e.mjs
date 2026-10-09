@@ -284,6 +284,31 @@ try {
     log(C.yellow("  ! 没配 LLM，下一步的 LLM 构图会自动降级成启发式"));
   }
 
+  /*
+    Playwright 的三态必须能从健康检查里读出来。
+
+    以前只有一个布尔值，于是「用户自己关掉的」和「开着但没装」在界面上一模一样，
+    都是一句「未启用」—— 而这两件事该让用户做的事完全不同（前者不用管，后者要么
+    装、要么忽略）。所以这里钉的是**措辞**：未安装时必须说「未安装」。
+  */
+  if (by.playwright) {
+    const d = String(by.playwright.detail ?? "");
+    const saysMode = d.includes("模式：") || d.includes("PLAYWRIGHT_MODE=off");
+    check(
+      "健康检查",
+      "Playwright 三态可读（关掉 / 没装 / 已启用 分别可辨）",
+      saysMode,
+      d,
+    );
+    // 「用户自己关掉的」和「开着但没装」不能都叫「未启用」
+    check(
+      "健康检查",
+      "「已关闭」与「未安装」措辞可辨（不是都叫「未启用」）",
+      d.includes("已关闭") || d.includes("未安装"),
+      d,
+    );
+  }
+
   // ── 1. 搜索 ────────────────────────────────────────────────
   step("1. 搜索（SSE 流式）");
 
@@ -416,6 +441,7 @@ try {
   const targets = interleaveBySite(results_, FETCH_LIMIT).map((r) => r.id);
   documents = [];
   let fetchPlan = null;
+  let fetchDone = null;
 
   const [, fetchMs] = await timed(() =>
     sse(`${BASE}/api/fetch`, {
@@ -433,6 +459,7 @@ try {
             `${ev.doc.error ? ` ⚠ ${ev.doc.error}` : ""} ${ev.doc.title.slice(0, 30)}`,
         );
       } else if (ev.type === "done") {
+        fetchDone = ev;
         debug("byMethod:", JSON.stringify(ev.byMethod));
       } else if (ev.type === "error") {
         debug("error:", ev.message);
@@ -446,6 +473,20 @@ try {
 
   check("抓取", "逐篇回传了文档", documents.length === targets.length, `${documents.length}/${targets.length} 篇 / ${fetchMs}ms`);
   check("抓取", "至少 1 篇拿到正文", withBody.length > 0, `${withBody.length} 篇正文，${fallback.length} 篇退化为摘要`);
+
+  /*
+    无头浏览器那一级的用量必须是个**数字**，不能是「有/无」。
+
+    界面上要显示「其中 N 篇经无头浏览器渲染」，而配上 `PLAYWRIGHT_MAX_PAGES_PER_RUN`
+    的配额之后，N 还可能小于「本该走浏览器的篇数」—— 两个数都得能读到，
+    否则用户没法判断「是不是配额卡住了」。
+  */
+  check(
+    "抓取",
+    "done 事件报了无头浏览器的用量（byMethod.playwright 是数字）",
+    typeof fetchDone?.byMethod?.playwright === "number",
+    `playwright=${fetchDone?.byMethod?.playwright}`,
+  );
 
   /*
     显式点名 `resultIds` 时**不做相关性过滤**（P12.4）。

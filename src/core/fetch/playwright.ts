@@ -30,7 +30,7 @@ let browserPromise: Promise<Browser | null> | undefined;
 
 /** 单例浏览器。冷启动约 1 秒，复用后每次抓取只需新建 context。 */
 async function getBrowser(): Promise<Browser | null> {
-  if (!config.enablePlaywright) return null;
+  if (config.playwrightMode === "off") return null;
 
   browserPromise ??= (async () => {
     try {
@@ -53,6 +53,30 @@ async function getBrowser(): Promise<Browser | null> {
 
 export async function isPlaywrightAvailable(): Promise<boolean> {
   return (await getBrowser()) !== null;
+}
+
+/**
+ * 「包装了没有」—— 只做模块解析，**不启动浏览器**。
+ *
+ * 和 `isPlaywrightAvailable()` 的分工：
+ *
+ *   - 那边要真启动一次（~1 秒）才知道行不行，所以结果缓存在单例里，供抓取链用；
+ *   - 这边给 `/api/health` 用。健康检查是用户刷新页面就会打一次的东西，
+ *     在里面启动一个 Chromium 是不可接受的 —— 一个探活接口不该有这种副作用。
+ *
+ * 因此它回答的只是「playwright 这个包解析得到吗」，**不包括**浏览器二进制
+ * 有没有下载。两者是分开的两步（`npm i playwright` 与 `npx playwright install
+ * chromium`），而后者只能靠真启动来确认。所以返回 true 时提示语里仍然要写清
+ * 「首次使用需要 npx playwright install chromium」—— 不能因为这里返回 true
+ * 就告诉用户「已经可用」。
+ */
+export function isPlaywrightInstalled(): boolean {
+  try {
+    requireFromRoot.resolve("playwright");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export interface BrowserFetchResult {

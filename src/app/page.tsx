@@ -260,6 +260,10 @@ export default function Home() {
     setFetchProgress(null);
     setFetchNotice(null);
 
+    // plan 事件给「跳过了几条不相关的」，done 事件才有「渲染了几篇」——
+    // 两条提示要能同时出现，所以这里把前一半先记下来，到 done 时一起合成
+    let skippedIrrelevant = 0;
+
     try {
       await postSse<FetchEvent>(
         "/api/fetch",
@@ -268,12 +272,8 @@ export default function Home() {
           switch (e.type) {
             case "plan":
               setFetchProgress({ done: 0, total: e.total });
-              setFetchNotice(
-                e.skippedIrrelevant > 0
-                  ? `已跳过 ${e.skippedIrrelevant} 条疑似与主题不相关的结果（它们仍在列表里；` +
-                    `想抓的话在结果里勾选这几条，再点一次抓取）`
-                  : null,
-              );
+              skippedIrrelevant = e.skippedIrrelevant;
+              setFetchNotice(fetchNoticeText(skippedIrrelevant, 0));
               break;
             case "doc":
               setFetchProgress({ done: e.done, total: e.total });
@@ -283,6 +283,9 @@ export default function Home() {
               ]);
               break;
             case "done":
+              setFetchNotice(
+                fetchNoticeText(skippedIrrelevant, e.byMethod.playwright),
+              );
               break;
             case "error":
               setSearchError(e.message);
@@ -621,6 +624,31 @@ function mergeResults(
 
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * 抓取完成后那一行小字。
+ *
+ * 两个数字来自两个事件（`plan` 给 skippedIrrelevant，`done` 给 byMethod），
+ * 所以抽成一个纯函数由调用方凑齐再渲染 —— 让「两句话怎么拼」只有一处真相，
+ * 而不是在事件回调里各写一半。
+ *
+ * 「渲染」那一句只在真的发生过时才说。默认是 0，不该占一行。
+ * 措辞用「本次会话」而不是「这一批」：`byMethod` 统计的是 `session.documents`，
+ * 是累计值（`fetch/route.ts` 的 `tally`），说成这一批就是错的。
+ */
+function fetchNoticeText(skippedIrrelevant: number, playwright: number): string | null {
+  const parts: string[] = [];
+  if (skippedIrrelevant > 0) {
+    parts.push(
+      `已跳过 ${skippedIrrelevant} 条疑似与主题不相关的结果（它们仍在列表里；` +
+        `想抓的话在结果里勾选这几条，再点一次抓取）`,
+    );
+  }
+  if (playwright > 0) {
+    parts.push(`本次会话已有 ${playwright} 篇靠无头浏览器渲染拿到正文`);
+  }
+  return parts.length ? parts.join("；") : null;
 }
 
 /** 会话放多久算「可能过时」。7 天：再久，搜索结果里的链接和内容都会开始失效。 */
