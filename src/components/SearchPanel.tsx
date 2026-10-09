@@ -12,6 +12,7 @@ import { useState } from "react";
 import type {
   ProviderLogEntry,
   ResultSignal,
+  SearchPlan,
   SearchResult,
   SiteKey,
   SortMode,
@@ -56,6 +57,14 @@ export interface SearchPanelProps {
   /** 上一次搜索的时效过滤副作用。null 表示还没搜过。 */
   timeFilter: { dropped: number; unknown: number } | null;
 
+  /**
+   * 本轮搜索的**查询分析**结果。null 表示还没搜过。
+   *
+   * 刻意把服务端的分析直接摊在界面上 —— 用户原话是「需要搜索词进行分析」，
+   * 而分析如果不给人看，它就只是一段看不见的改写，出了偏差无从发现。
+   */
+  plan: SearchPlan | null;
+
   results: SearchResult[];
   logs: ProviderLogEntry[];
   /** 站点 → 该站点本轮的结果数，用于展示「哪些站点有货」。 */
@@ -76,12 +85,34 @@ export default function SearchPanel(props: SearchPanelProps) {
   const {
     query, onQueryChange, sites, onToggleSite, onSearch, searching,
     timeRange, onTimeRangeChange, sortMode, onSortModeChange, timeFilter,
-    results, logs, siteCounts,
+    plan, results, logs, siteCounts,
     documents, onFetch, fetching, fetchProgress,
     onBuildGraph, building, graphError, hasGraph,
   } = props;
 
   const allSites = SITE_ORDER;
+
+  /*
+    某个站点这一轮实际用的查询词。
+
+    服务端的 `variantFor()`（`core/search/plan.ts`）就是这个规则，但那个模块
+    import 了 `@/core/env`（读 process.env、引 node 内置模块），客户端组件引不
+    进来。规则只有一行，这里照搬 —— **改一边必须同时改另一边**。
+  */
+  const queryFor = (s: SiteKey) => plan?.variants[s]?.trim() || plan?.raw || "";
+
+  /**
+   * 真正被改写过查询词的站点。
+   *
+   * 按 `SITE_ORDER` 而非当前勾选列表来算：用户可以在搜完之后再去改勾选，
+   * 而这份分析说的是**刚才那次搜索**，不该跟着勾选变。
+   */
+  const rewritten = plan
+    ? allSites.filter((s) => {
+        const v = plan.variants[s]?.trim();
+        return Boolean(v) && v !== plan.raw;
+      })
+    : [];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -190,6 +221,78 @@ export default function SearchPanel(props: SearchPanelProps) {
           </label>
         </div>
       </div>
+
+      {/* ── 搜索词分析 ── */}
+      {plan && (
+        <div className="panel" style={{ padding: 14 }}>
+          <h2>搜索词分析</h2>
+
+          {plan.source === "lexical" ? (
+            <p className="dim" style={{ fontSize: 12, margin: 0 }}>
+              未做模型分析（{plan.fallbackReason ?? "未知原因"}），各站点按你的原话检索。
+            </p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12 }}>
+              <div>
+                <span className="dim">理解为：</span>
+                {plan.intent}
+              </div>
+
+              {plan.entity.name && (
+                <div>
+                  <span className="dim">主题词：</span>
+                  {plan.entity.name}
+                  {plan.entity.aliases.length > 0 && (
+                    <span className="dim">
+                      {" "}· 也写作 {plan.entity.aliases.join(" / ")}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {plan.disambiguators.length > 0 && (
+                <div>
+                  <span className="dim">限定：</span>
+                  {plan.disambiguators.join("、")}
+                </div>
+              )}
+
+              {plan.negatives.length > 0 && (
+                <div>
+                  <span className="dim">排除：</span>
+                  {plan.negatives.join("、")}
+                </div>
+              )}
+            </div>
+          )}
+
+          {rewritten.length > 0 && (
+            <div style={{ marginTop: 10, fontSize: 12 }}>
+              <div className="dim" style={{ marginBottom: 4 }}>
+                各站点改写的查询词（其余站点按原话检索）：
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                {rewritten.map((s) => (
+                  <div key={s} style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+                    <span className="dim" style={{ minWidth: 72 }}>
+                      {siteShortLabel(s)}
+                    </span>
+                    <span className="mono" style={{ wordBreak: "break-all" }}>
+                      {queryFor(s)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {plan.source === "llm" && rewritten.length === 0 && (
+            <p className="dim" style={{ fontSize: 12, marginTop: 10, marginBottom: 0 }}>
+              分析后认为不必改写，各站点均按你的原话检索。
+            </p>
+          )}
+        </div>
+      )}
 
       {/* ── 后续动作 ── */}
       {results.length > 0 && (

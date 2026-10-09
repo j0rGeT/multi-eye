@@ -19,6 +19,7 @@ import type {
   GraphNode,
   ProviderLogEntry,
   SearchEvent,
+  SearchPlan,
   SearchResult,
   Session,
   SessionViewState,
@@ -47,6 +48,8 @@ export default function Home() {
   const [searchedAt, setSearchedAt] = useState<string | null>(null);
 
   const [searching, setSearching] = useState(false);
+  /** 这一轮的搜索词分析。搜完就留着，让用户随时能回看「当时是怎么理解的」。 */
+  const [plan, setPlan] = useState<SearchPlan | null>(null);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [logs, setLogs] = useState<ProviderLogEntry[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -175,6 +178,7 @@ export default function Home() {
     setSessionId(null);
     setTimeFilter(null);
     setSearchedAt(null);
+    setPlan(null);
     // 位置是跟着**那张图**走的，换一轮主题就必须丢掉，
     // 否则新图会沿用上一个主题的坐标（同 id 的节点会被钉在毫不相干的位置）
     setViewState(undefined);
@@ -208,6 +212,7 @@ export default function Home() {
               setSearchError(e.message);
               break;
             case "plan":
+              setPlan(e.plan);
               break;
           }
         },
@@ -438,6 +443,7 @@ export default function Home() {
               onToggleSite={toggleSite}
               onSearch={runSearch}
               searching={searching}
+              plan={plan}
               results={results}
               logs={logs}
               siteCounts={siteCounts}

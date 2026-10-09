@@ -337,6 +337,37 @@ try {
   const sitesHit = new Set(results_.map((r) => r.site));
   check("搜索", "至少命中 2 个站点", sitesHit.size >= 2, [...sitesHit].join("/"));
 
+  /*
+    查询分析（P12.2）。
+
+    只断言**可观测的**部分：分析结果确实随 `plan` 事件到了，原话被逐字保留，
+    且站点数对得上。至于「预览串 == 实际发出的串」—— 那是服务端内部两处
+    引用同一份 `plan` 的必然结果，从外部看不到 provider 真正发出的 request，
+    所以不在这里假装验证（它由 `route.ts` 里唯一的扇出点保证）。
+  */
+  check("搜索", "收到查询分析", Boolean(plan?.plan), plan?.plan?.source ?? "无");
+  check(
+    "搜索",
+    "分析保留了用户原话",
+    plan?.plan?.raw === QUERY,
+    `raw=${JSON.stringify(plan?.plan?.raw)}`,
+  );
+  check(
+    "搜索",
+    "预览查询串与站点数一致",
+    plan?.queries?.length === SITES.length,
+    `${plan?.queries?.length ?? 0}/${SITES.length}`,
+  );
+  if (plan?.plan?.source === "lexical") {
+    // 没配 LLM 时必须**逐字保行为**：一个站点都不许被改写
+    check(
+      "搜索",
+      "未配置 LLM 时不改写任何查询",
+      Object.keys(plan.plan.variants ?? {}).length === 0,
+      JSON.stringify(plan.plan.variants),
+    );
+  }
+
   // ── 2. 抓取 ────────────────────────────────────────────────
   step("2. 抓取正文（SSE 逐篇）");
 

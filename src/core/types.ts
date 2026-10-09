@@ -76,6 +76,47 @@ export interface SearchQuery {
 }
 
 /**
+ * 搜索词的**分析结果**。
+ *
+ * 存在的理由是一个实测出来的毛病：`DeepSeek-V4.1-Flash` 这种带连字符的型号名
+ * 会被后端拆成 `deepseek` / `v4.1` / `flash` 三个通用 token，于是搜回来一批
+ * 只在版本号上撞车的无关内容（实测 35 条里有 7 条连「DeepSeek」都没出现，
+ * 包括一个 ERP 产品的「v4.1.7 发布」）。
+ *
+ * 它同时服务两件事：
+ *   1. **改写各站点的查询**（`variants`）—— B 站的视频口播、知乎的问答、
+ *      GitHub 的仓库名，各自的最优查询并不相同
+ *   2. **给相关性判定提供判据**（`entity` / `disambiguators` / `negatives`）——
+ *      没有一份「用户到底想查什么」的明确表述，就没法说某条结果不切题
+ *
+ * `raw` 永远逐字保留用户原话。任何字段被改烂都只是搜索质量下降，
+ * 不能变成「用户说的话被丢了」。
+ */
+export interface SearchPlan {
+  /** 用户原话，逐字保留。 */
+  raw: string;
+  /** 一句话说明这次要查什么。 */
+  intent: string;
+  /** 最能代表主题的专有名词与它的其他写法。`name` 为空串表示没有明确实体。 */
+  entity: { name: string; aliases: string[] };
+  /** 用来消歧的限定词，如「大语言模型」「开源的」。 */
+  disambiguators: string[];
+  /** 应当排除的主题，如「招聘」「股价」。 */
+  negatives: string[];
+  /**
+   * 站点 → 针对该站点改写后的**查询正文**。
+   *
+   * 刻意不含站点关键词与 `site:` 语法 —— 那是 `buildQuery`（`search/sites.ts`）
+   * 的职责，在这里再拼一次会得到「知乎 知乎」。
+   */
+  variants: Partial<Record<SiteKey, string>>;
+  /** 这份分析是谁给的。`lexical` 表示没走上 LLM，此时行为与加这个功能之前逐字一致。 */
+  source: "llm" | "lexical";
+  /** `source === "lexical"` 时为什么没走上 LLM。 */
+  fallbackReason?: string;
+}
+
+/**
  * 一条结果自带的客观量化信号 —— 播放量、star 数、评论数这类**上游本来就给了的事实**。
  *
  * 刻意做成「标签 + 数值」的开放列表，而不是一组固定字段：每个源能给的指标
@@ -421,7 +462,14 @@ export type ProgressEvent =
 
 /** /api/search 通过 SSE 逐步回传，让用户不用干等全部站点返回。 */
 export type SearchEvent =
-  | { type: "plan"; topic: Topic; queries: string[] }
+  | {
+      type: "plan";
+      topic: Topic;
+      /** 分析结果。界面据此说明「把这句话理解成了什么」。 */
+      plan: SearchPlan;
+      /** 实际会发给各站点的查询串，由 `plan` 派生 —— 与真实扇出同一份来源。 */
+      queries: string[];
+    }
   | { type: "results"; site: SiteKey; results: SearchResult[] }
   | { type: "provider"; log: ProviderLogEntry }
   | {

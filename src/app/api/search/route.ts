@@ -10,6 +10,7 @@ import type {
 import { searchAll } from "@/core/search/orchestrate";
 import { TIME_RANGE_MS } from "@/core/search/filter";
 import { buildQuery, DEFAULT_SITES, SITE_TARGETS } from "@/core/search/sites";
+import { planQueries, variantFor } from "@/core/search/plan";
 import { newTopicId, saveSession } from "@/core/store";
 import { sseResponse } from "@/core/sse";
 
@@ -78,14 +79,30 @@ export async function POST(req: NextRequest) {
   };
 
   return sseResponse<SearchEvent>(async (emit) => {
+    /*
+      搜索词分析。**放在扇出之前，而且只放一次。**
+
+      契约上它必须和随后真正发出的查询是同一份东西 —— 所以先分析、再拿分析
+      结果生成预览、再把同一份 plan 交给 `searchAll`。此前预览用
+      `buildQuery(query, s, body.domain)` 现算，而 `searchAll` 收不到 `domain`，
+      于是只要带了 domain，界面上说的和实际跑的就是两个查询。
+
+      分析失败/超时/没配 LLM 都会退化成「不改写」（见 plan.ts），
+      此时 queries 与加这个功能之前逐字相同。
+    */
+    const plan = await planQueries(query, sites, { signal: req.signal });
+
     emit({
       type: "plan",
       topic,
-      queries: sites.map((s) => buildQuery(query, s, body.domain)),
+      plan,
+      queries: sites.map((s) => buildQuery(variantFor(plan, s), s, body.domain)),
     });
 
     const { results, log, timeFilter } = await searchAll({
       topic: query,
+      plan,
+      domain: body.domain,
       sites,
       signal: req.signal,
       timeRange,

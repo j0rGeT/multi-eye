@@ -12,6 +12,7 @@ import type {
   ProviderId,
   ProviderLogEntry,
   ResultSignal,
+  SearchPlan,
   SearchProvider,
   SearchResult,
   SiteKey,
@@ -28,6 +29,7 @@ import { normalizeUrl } from "./normalize";
 import { filterByTime } from "./filter";
 import { signalMagnitude } from "@/core/signals";
 import { isDirectOnly } from "./sites";
+import { variantFor } from "./plan";
 import { probeTopicProviders } from "./registry";
 
 /**
@@ -67,9 +69,26 @@ const PER_SITE_LIMIT = 10;
 const TOPIC_BUDGET_MS = 8_000;
 
 export interface OrchestrateOptions {
+  /** 用户原话。**永远**是它当兜底，改写只发生在拿得到 `plan` 的时候。 */
   topic: string;
   sites: SiteKey[];
   signal?: AbortSignal;
+  /**
+   * 搜索词分析结果。给了就用它改写各站点的查询；不给就完全按原话搜。
+   *
+   * 可选而不是必填，是为了让「分析失败」这件事在类型上就成立 ——
+   * 调用方拿不到 plan 时不必编一个假的出来。
+   */
+  plan?: SearchPlan;
+  /**
+   * 任意域名定向（如 blog.csdn.net）。
+   *
+   * 这个字段此前**只存在于预览里**：`/api/search` 拿它生成 `plan` 事件的
+   * 查询串，却从没传给 `searchAll`，于是 providers 走的 `buildQuery` 收到的
+   * `domain` 永远是 undefined —— 预览说「topic site:blog.csdn.net」，
+   * 实际发出的是「topic 知乎」。用户看到的和真正跑的不是一回事。
+   */
+  domain?: string;
   /** 时效窗口。既转给上游，也在本地兜底过滤（上游常常忽略它）。 */
   timeRange?: TimeRange;
   /** 融合排序方式。默认 `relevant`（多源印证优先）。 */
@@ -101,7 +120,18 @@ async function buildChain(): Promise<SearchProvider[]> {
 export async function searchAll(
   opts: OrchestrateOptions,
 ): Promise<OrchestrateResult> {
-  const { topic, sites, signal, timeRange, sortMode, onSiteDone } = opts;
+  const { topic, sites, signal, timeRange, sortMode, onSiteDone, plan, domain } =
+    opts;
+
+  /**
+   * 这个站点该用什么查询词。
+   *
+   * 抽成一个函数而不是在三处 `provider.search` 里各写一遍 —— 三处各写一遍的话，
+   * 将来加第四个调用点（或改回退规则）时漏掉一处，表现是「某一个通道搜的还是
+   * 原话」，而结果看起来只是「那个站的效果差一点」，几乎不可能归因。
+   */
+  const textFor = (site: SiteKey) => (plan ? variantFor(plan, site) : topic);
+
   const chain = await buildChain();
   const ytdlp = new YtDlpProvider();
   const bilibili = new BilibiliProvider();
@@ -218,7 +248,14 @@ export async function searchAll(
           )(() =>
             withRetry(() =>
               provider.search(
-                { text: topic, site, limit: PER_SITE_LIMIT, timeRange, sortMode },
+                {
+                  text: textFor(site),
+                  site,
+                  domain,
+                  limit: PER_SITE_LIMIT,
+                  timeRange,
+                  sortMode,
+                },
                 signal,
               ),
             ),
@@ -262,7 +299,14 @@ export async function searchAll(
             () =>
               withRetry(() =>
                 sp.provider.search(
-                  { text: topic, site, limit: sp.limit, timeRange, sortMode },
+                  {
+                    text: textFor(site),
+                    site,
+                    domain,
+                    limit: sp.limit,
+                    timeRange,
+                    sortMode,
+                  },
                   signal,
                 ),
               ),
@@ -328,8 +372,16 @@ export async function searchAll(
       limiter("topic", CONCURRENCY.topic ?? 2)(async () => {
         const t0 = Date.now();
         try {
+          /*
+            主题源同样吃改写后的查询词。它们的 `search()` 只读 `q.text` ——
+            不读 site / domain（一个接口覆盖全站，没有「按站点定向」这回事），
+            所以这里只换词，不塞它们用不上的字段。
+          */
           const results = await withRetry(() =>
-            t.provider.search({ text: topic, limit: t.limit, timeRange, sortMode }, signal),
+            t.provider.search(
+              { text: textFor(t.site), limit: t.limit, timeRange, sortMode },
+              signal,
+            ),
           );
           // 和站点任务同样的道理：日志要拿**自己这条**，不能取
           // `allLogs.at(-1)` —— 几个主题源并发写同一个数组，取到的
