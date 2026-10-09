@@ -7,8 +7,8 @@
  * 原始资料，每一条都能点回原文。图是入口，资料才是终点。
  */
 
-import type { Cluster, Document, GraphModel, GraphNode } from "@/core/types";
-import { formatDate } from "@/core/time";
+import type { Document, GraphModel, GraphNode } from "@/core/types";
+import { dateSpan, formatDate, formatSpan } from "@/core/time";
 
 export interface NodeDetailProps {
   node: GraphNode | null;
@@ -110,6 +110,7 @@ export default function NodeDetail({
             这篇资料没有可提取的正文（可能只拿到了搜索摘要）。
           </p>
         )}
+        {related.length > 0 && <SpanLine docs={related} />}
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {related.map((doc) => (
             <button
@@ -175,6 +176,41 @@ function neighborLabels(
   }
 
   return out.sort((a, b) => b.weight - a.weight).slice(0, 12);
+}
+
+/**
+ * 支撑资料的时间分布 —— 给「时效感」，零副作用。
+ *
+ * 「这个概念有几篇资料在支撑」回答了**证据有多厚**，但没回答**有多新**：
+ * 4 篇全来自 2019 年，和 4 篇来自上个月，是完全不同的两件事。
+ *
+ * 刻意**不动拓扑权重**。图的权重回答的是「语义结构长什么样」，把「新颖度」
+ * 混进去会让权重无法解释（见 P8.5 的取舍）；所以时间只在这里如实展示。
+ *
+ * 只统计 `publishedAt`，**绝不用 `fetchedAt` 顶上** —— 那是「我们什么时候去看的」，
+ * 不是「这篇文章什么时候写的」。没有发布日期的资料单独报出数量，否则
+ * 「4 篇 · 跨度 X」会让人以为这 4 篇全都落在那段区间里。
+ */
+function SpanLine({ docs }: { docs: Document[] }) {
+  const span = formatSpan(dateSpan(docs.map((d) => d.publishedAt)));
+  const dated = docs.filter((d) => d.publishedAt).length;
+
+  // 一个可解析的日期都没有：直说，而不是显示一个空跨度
+  if (!span) {
+    return (
+      <p className="dim" style={{ fontSize: 11, margin: "0 0 8px" }}>
+        这 {docs.length} 篇都没有发布日期，无法判断新旧。
+      </p>
+    );
+  }
+
+  const undated = docs.length - dated;
+  return (
+    <p className="dim" style={{ fontSize: 11, margin: "0 0 8px" }}>
+      {dated} 篇有发布日期 · 跨度 {span}
+      {undated > 0 && `（另 ${undated} 篇日期未知）`}
+    </p>
+  );
 }
 
 export function methodLabel(m: Document["extractMethod"]): string {
