@@ -79,6 +79,60 @@ export async function GET() {
       detail: config.enablePlaywright ? "已启用" : "未启用",
       hint: "可选。用于 JS 空壳站点的正文降级抓取。",
     },
+    /*
+      ── 主题源（P8.2）──
+
+      这三行**不做主动探测**。
+
+      它们全都是免 key 的公开接口，唯一能让它们整体不可用的本地因素是
+      **代理**（HN / arXiv / GitHub 都在境外，见 `fetch/agent.ts` 的域名分流）。
+      所以 `ok` 直接跟着 proxy 那一行走：代理挂了三行一起变红，用户一眼就能
+      看到根因是同一个，不用逐个去猜哪个源坏了。
+
+      真的去 ping 一遍会让 `/api/health` 多打三个网络请求 —— 这个接口已经
+      在打 SearXNG 和代理了，再叠三个就慢到不适合做首屏判据（P9.2 记过
+      这个坑）。而**每次搜索实际的成败**，`providerLog` 里本来就逐条记着，
+      那才是权威的运行时事实。
+    */
+    {
+      id: "github",
+      label: "GitHub 检索",
+      required: false,
+      ok: proxy.ok,
+      detail: !proxy.ok
+        ? "代理不可达，境外源将同时失败"
+        : config.githubToken
+          ? "已配置 GITHUB_TOKEN（30 次/分）"
+          : "未认证（10 次/分，按 IP）",
+      hint: "可选。未认证时配额 10 次/分钟，超了会返回空结果并在检索日志写明原因，不会让整次搜索失败。",
+    },
+    {
+      id: "hackernews",
+      label: "Hacker News 检索",
+      required: false,
+      ok: proxy.ok,
+      detail: proxy.ok ? "Algolia 公开接口，免 key" : "代理不可达，境外源将同时失败",
+      hint: "可选。整次搜索只调用一次（主题源），失败不影响主搜索。",
+    },
+    {
+      id: "arxiv",
+      label: "arXiv 检索",
+      required: false,
+      ok: proxy.ok,
+      detail: proxy.ok ? "Atom 公开接口，免 key" : "代理不可达，境外源将同时失败",
+      hint: "可选。官方要求请求间隔 ≥3 秒，因此与其它主题源串行受控。",
+    },
+    {
+      id: "juejin",
+      label: "掘金",
+      required: false,
+      // 掘金没有直连 provider，完全靠搜索引擎的索引，所以它的可用性跟着 SearXNG
+      ok: searxng.ok,
+      detail: searxng.ok
+        ? "经搜索引擎索引检索（无直连 provider）"
+        : "依赖 SearXNG 提供索引",
+      hint: "国内站点，直连不走代理。能否搜到取决于上游是否收录，空结果不代表故障。",
+    },
   ];
 
   // 只要必需的 SearXNG 挂了就算不健康；可选项缺失不影响整体可用

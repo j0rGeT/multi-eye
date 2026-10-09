@@ -40,6 +40,15 @@ function findYtdlp(): string {
 export const config = {
   searxngUrl: process.env.SEARXNG_URL ?? "http://localhost:8888",
   serperApiKey: process.env.SERPER_API_KEY ?? "",
+  /**
+   * 可选的 GitHub token。
+   *
+   * 没有它 GitHub 检索照样能跑，只是未认证的 Search API 每分钟只有 10 次
+   * 且按 IP 计 —— 实测经常一上来就已经用光了。配上之后提到 30 次/分。
+   *
+   * 写进 `.env.local`（已在 .gitignore 里），**绝不进仓库**。
+   */
+  githubToken: process.env.GITHUB_TOKEN ?? "",
   ytdlpPath: process.env.YTDLP_PATH ?? findYtdlp(),
   /**
    * LLM 构图。走 OpenAI 协议的 /chat/completions，所以任何兼容端点都能接：

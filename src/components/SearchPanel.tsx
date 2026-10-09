@@ -8,6 +8,7 @@
  * 直接摊开，比让用户去猜有用得多。
  */
 
+import { useState } from "react";
 import type {
   ProviderLogEntry,
   ResultSignal,
@@ -16,7 +17,7 @@ import type {
   SortMode,
   TimeRange,
 } from "@/core/types";
-import { SITE_ORDER, siteShortLabel } from "@/core/search/sites";
+import { SITE_ORDER, providerLabel, siteShortLabel } from "@/core/search/sites";
 import {
   SORT_LABELS,
   TIME_RANGE_LABELS,
@@ -307,6 +308,16 @@ export default function SearchPanel(props: SearchPanelProps) {
   );
 }
 
+/**
+ * 结果分组方式。
+ *
+ * `site` 回答「知乎有什么、B 站有什么」，是用户最常见的心智模型，所以是默认。
+ * `provider` 回答「这批资料是从哪条通道捞回来的」—— 引入主题源之后这两者不再
+ * 等价：一条 HN story 的内容可能住在 github.com，按站点归是 GitHub、按来源归是
+ * Hacker News。想知道「HN 这个源到底给了什么」就只能看来源视图。
+ */
+type GroupBy = "site" | "provider";
+
 function ResultList({
   results,
   documents,
@@ -317,14 +328,16 @@ function ResultList({
   timeFilter: { dropped: number; unknown: number } | null;
 }) {
   const docByUrl = new Map(documents.map((d) => [d.url, d]));
+  const [groupBy, setGroupBy] = useState<GroupBy>("site");
 
-  // 按站点分组展示。融合后的 results 是全局排序的，但用户的心智模型是
-  // 「知乎有什么、B 站有什么」，所以这里按站点重新分桶。
-  const groups = new Map<SiteKey, SearchResult[]>();
+  // 融合后的 results 是全局排序的，但用户的心智模型是分桶的，
+  // 所以这里按选定的维度重新分。
+  const groups = new Map<string, SearchResult[]>();
   for (const r of results) {
-    const list = groups.get(r.site);
+    const key = groupBy === "site" ? r.site : r.provider;
+    const list = groups.get(key);
     if (list) list.push(r);
-    else groups.set(r.site, [r]);
+    else groups.set(key, [r]);
   }
 
   const ordered = [...groups.entries()].sort(
@@ -333,7 +346,40 @@ function ResultList({
 
   return (
     <div className="panel" style={{ padding: 14 }}>
-      <h2>搜索结果 · {results.length} 条</h2>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "baseline",
+          justifyContent: "space-between",
+          gap: 10,
+        }}
+      >
+        <h2>搜索结果 · {results.length} 条</h2>
+        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+          <span className="dim" style={{ fontSize: 11 }}>按</span>
+          {(["site", "provider"] as const).map((m) => (
+            <button
+              key={m}
+              className="badge"
+              onClick={() => setGroupBy(m)}
+              title={
+                m === "site"
+                  ? "按内容所在的站点分组"
+                  : "按检索来源分组 —— 同一条资料可能由不同通道捞到"
+              }
+              style={{
+                cursor: "pointer",
+                // 与上面的站点芯片用同一套选中态配色，免得出现两种「被选中」
+                color: groupBy === m ? "var(--accent)" : "var(--fg-dim)",
+                borderColor: groupBy === m ? "#1f6feb66" : "var(--border)",
+                background: groupBy === m ? "#1f6feb15" : "transparent",
+              }}
+            >
+              {m === "site" ? "站点" : "来源"}
+            </button>
+          ))}
+        </div>
+      </div>
 
       {/*
         时效筛选的副作用必须说出来。用户勾了「一周内」却看到一批资料，
@@ -349,13 +395,14 @@ function ResultList({
       )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        {ordered.map(([site, items]) => (
-          <div key={site}>
+        {ordered.map(([key, items]) => (
+          <div key={key}>
             <div
               className="dim"
               style={{ fontSize: 11, marginBottom: 6, letterSpacing: "0.05em" }}
             >
-              {siteShortLabel(site)} · {items.length}
+              {groupBy === "site" ? siteShortLabel(key) : providerLabel(key)} ·{" "}
+              {items.length}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {items.map((r) => {

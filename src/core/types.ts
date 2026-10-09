@@ -10,14 +10,25 @@
 /** 支持定向检索的站点。'web' 表示不做 site: 限定的全网兜底。 */
 export type SiteKey =
   | "zhihu"
+  | "juejin"
   | "xiaohongshu"
   | "youtube"
   | "x"
   | "bilibili"
+  | "hackernews"
+  | "github"
+  | "arxiv"
   | "web";
 
 /** 实际发出请求的搜索后端。 */
-export type ProviderId = "serper" | "searxng" | "ytdlp" | "bilibili";
+export type ProviderId =
+  | "serper"
+  | "searxng"
+  | "ytdlp"
+  | "bilibili"
+  | "hackernews"
+  | "github"
+  | "arxiv";
 
 // ─────────────────────────── 搜索层 ───────────────────────────
 
@@ -117,6 +128,18 @@ export interface ProviderCapabilities {
   supportsSiteSyntax: boolean;
   supportsVideo: boolean;
   needsApiKey: boolean;
+  /**
+   * 这个 provider 是「按站点查」还是「按主题查」。缺省 `"site"`。
+   *
+   * 这个区分不是分类癖，它决定调用方式：**`site` 类会被放进「每个勾选站点
+   * 各跑一遍」的循环里，`topic` 类整个主题只跑一次**。
+   *
+   * 对 GitHub 这类有严格配额的接口，这个区别是致命的：未认证的 GitHub
+   * Search 只有 10 次/分钟，而站点点一下可能勾六七个，放进循环里一轮就把
+   * 配额打光，剩下全是 429。HN/GitHub/arXiv 这类「一个接口覆盖全站」的源
+   * 天然属于 topic 类。
+   */
+  scope?: "site" | "topic";
 }
 
 export interface SearchProvider {

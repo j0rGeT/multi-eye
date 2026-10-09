@@ -26,6 +26,8 @@ import { limiter, withRetry } from "@/core/limit";
 import { normalizeUrl } from "./normalize";
 import { filterByTime } from "./filter";
 import { signalMagnitude } from "@/core/signals";
+import { isDirectOnly } from "./sites";
+import { buildTopicProviders } from "./registry";
 
 /**
  * 每个 provider 的并发上限。
@@ -37,6 +39,15 @@ const CONCURRENCY: Record<string, number> = {
   serper: 5,
   ytdlp: 1,
   bilibili: 1,
+  /**
+   * 主题源同时打几个。
+   *
+   * 2 而不是 3，两个原因：arXiv 的使用条款明确要求请求间隔 ≥3 秒，
+   * 而 GitHub 未认证只有 10 次/分 —— 同时打三个源，其中两个还可能因为
+   * 退避重试再打，很容易撞上配额。串成 2 路并行对总时长的代价很小
+   * （8 秒预算足够），换来的是不被上游封。
+   */
+  topic: 2,
 };
 
 /** 一个站点拿到这么多结果就不再往链下游走。 */
@@ -44,6 +55,15 @@ const ENOUGH_RESULTS = 4;
 
 /** 每站点的抓取条数。 */
 const PER_SITE_LIMIT = 10;
+
+/**
+ * 主题源整组的软预算。
+ *
+ * 8 秒是因为这几个接口的正常响应都在 1~3 秒内（实测 HN 0.4s、arXiv 1.2s、
+ * GitHub 0.8s），留到 8 秒已经足够覆盖代理抖动。再长就会盖过用户对
+ * 「搜索要多久」的耐受 —— 而主搜索的结果其实早就到了。
+ */
+const TOPIC_BUDGET_MS = 8_000;
 
 export interface OrchestrateOptions {
   topic: string;
@@ -88,6 +108,9 @@ export async function searchAll(
     hasYtdlp(),
     bilibili.available(),
   ]);
+
+  // 主题源：整次搜索只跑一次，与站点任务并发。见 registry.ts 的说明。
+  const topicTargets = buildTopicProviders(new Set(["hackernews", "github", "arxiv"]));
 
   /**
    * 站点专用 provider —— 与通用搜索引擎链是**互补**关系，不是备选关系。
@@ -136,12 +159,30 @@ export async function searchAll(
     }
   };
 
-  // 站点之间并发，互不阻塞
-  const siteTasks = sites.map((site) =>
+  /*
+    站点任务。**directOnly 的站点不在这里**。
+
+    它们不参与引擎链（下面的 `if` 会直接跳过），唯一能产出的就是一条空结果和
+    一条伪造的日志 —— 而它们真正的结果由 `topicTasks` 那条路径产生。
+    两边都调 `onSiteDone` 的后果是客户端收到两次事件：先一次空的、
+    再一次有内容的，前一次还会让 UI 闪一下「无结果」。
+  */
+  const siteTasks = sites.filter((s) => !isDirectOnly(s)).map((site) =>
     limiter(`site:${site}`, 2)(async () => {
       const collected: SearchResult[] = [];
+      /**
+       * 本站点自己的日志，用来给 `onSiteDone` 挑一条代表作。
+       *
+       * **不能用 `allLogs.at(-1)`** —— 那是全局数组的最后一项，几个站点并发
+       * 在写它，取到的很可能是**别的站点**的日志。表现是 SSE 里出现
+       * 「searxng 在 github 上失败」这种张冠李戴的条目，用户照着它去排查
+       * 会查到一个根本没被调用过的 provider。
+       */
+      const siteLogs: ProviderLogEntry[] = [];
       let lastError: string | undefined;
 
+      // directOnly 的站点（HN/GitHub/arXiv）已经被 `.filter` 挡在外面了，
+      // 走到这里的站点都该走一遍引擎链
       for (const provider of chain) {
         if (!provider.capabilities.supportsSiteSyntax && site !== "web") continue;
 
@@ -167,20 +208,23 @@ export async function searchAll(
             ms,
           };
           allLogs.push(log);
+          siteLogs.push(log);
           collected.push(...results);
 
           if (results.length >= ENOUGH_RESULTS) break;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           lastError = msg;
-          allLogs.push({
+          const entry: ProviderLogEntry = {
             provider: provider.id,
             site,
             ok: false,
             count: 0,
             ms: Date.now() - t0,
             error: msg,
-          });
+          };
+          allLogs.push(entry);
+          siteLogs.push(entry);
           // 继续尝试链上的下一个 provider
         }
       }
@@ -199,33 +243,43 @@ export async function searchAll(
                 ),
               ),
           );
-          allLogs.push({
+          const entry: ProviderLogEntry = {
             provider: sp.provider.id,
             site,
             ok: true,
             count: extra.length,
             ms: Date.now() - t0,
-          });
+          };
+          allLogs.push(entry);
+          siteLogs.push(entry);
           collected.push(...extra);
         } catch (err) {
-          allLogs.push({
+          const entry: ProviderLogEntry = {
             provider: sp.provider.id,
             site,
             ok: false,
             count: 0,
             ms: Date.now() - t0,
             error: err instanceof Error ? err.message : String(err),
-          });
+          };
+          allLogs.push(entry);
+          siteLogs.push(entry);
         }
       }
 
       const unique = dedupeWithin(collected);
       absorb(unique);
 
+      /*
+        给 `onSiteDone` 挑一条日志：优先本站点自己那条，一条都没有才兜底。
+
+        兜底文案说的是「引擎链上没有任何 provider 能处理这个站点」——
+        比如没配 serper 且 searxng 不支持 site: 语法。
+      */
       onSiteDone?.(
         site,
         unique,
-        allLogs.at(-1) ?? {
+        siteLogs.at(-1) ?? {
           provider: "searxng",
           site,
           ok: false,
@@ -237,7 +291,71 @@ export async function searchAll(
     }),
   );
 
-  await Promise.allSettled(siteTasks);
+  /*
+    ── 主题源任务 ──
+
+    每个被勾选且可用的主题源一个任务，与站点任务**并发**（总时长取决于最慢
+    的那个，而不是求和）。跑在独立的 limiter 桶里，`CONCURRENCY.topic` 控制
+    同时打几个 —— 这些接口各自有配额，不能像站点那样铺开。
+  */
+  const topicTasks = topicTargets
+    .filter((t) => t.ok && sites.includes(t.site))
+    .map((t) =>
+      limiter("topic", CONCURRENCY.topic ?? 2)(async () => {
+        const t0 = Date.now();
+        try {
+          const results = await withRetry(() =>
+            t.provider.search({ text: topic, limit: t.limit, timeRange, sortMode }, signal),
+          );
+          // 和站点任务同样的道理：日志要拿**自己这条**，不能取
+          // `allLogs.at(-1)` —— 几个主题源并发写同一个数组，取到的
+          // 很可能是隔壁那个源的日志
+          const log: ProviderLogEntry = {
+            provider: t.provider.id,
+            site: t.site,
+            ok: true,
+            count: results.length,
+            ms: Date.now() - t0,
+          };
+          allLogs.push(log);
+          absorb(dedupeWithin(results));
+          onSiteDone?.(t.site, results, log);
+        } catch (err) {
+          /*
+            主题源失败**不中断**整次搜索，只记一条日志。
+
+            这是刻意的：它们是补充源，主搜索（引擎链 + 平台接口）不依赖它们。
+            GitHub 配额耗尽、代理抖动都是可预期的，把这类失败升级成
+            「搜索失败」会让一个可选源拖垮整个工具。
+          */
+          allLogs.push({
+            provider: t.provider.id,
+            site: t.site,
+            ok: false,
+            count: 0,
+            ms: Date.now() - t0,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }),
+    );
+
+  /*
+    软预算：主题源整组最多等 TOPIC_BUDGET_MS。
+
+    不加这一道，一个卡死的源就能把整次搜索拖到它自己的超时（arXiv 给到 15s，
+    GitHub 10s）。超时后**不取消已发出的请求**，只是不再等它们 ——
+    结果晚到也不会进结果集，因为 `absorb` 已经不会再被调用。
+
+    `Promise.allSettled` 而不是 `all`：某个源抛错不该让整组失败。
+  */
+  await Promise.allSettled([
+    ...siteTasks,
+    Promise.race([
+      Promise.allSettled(topicTasks),
+      new Promise((resolve) => setTimeout(resolve, TOPIC_BUDGET_MS)),
+    ]),
+  ]);
 
   const ranked = rankResults([...merged.values()], sortMode ?? "relevant");
   const { kept, dropped, unknown } = filterByTime(ranked, timeRange);

@@ -40,6 +40,14 @@ export interface SiteTarget {
   kind: DocKind;
   /** 该站点通常拿不到正文，UI 需要提前说明，避免用户以为是 bug。 */
   contentLimited?: boolean;
+  /**
+   * 只由自己的 provider 检索，**不参与搜索引擎链**。
+   *
+   * GitHub / arXiv / HN 都有「一个接口覆盖全站」的公开 API，走 API 拿到的
+   * 字段（star 数、引用日期、评论数）比搜索引擎摘要强得多；而且 bing 本来
+   * 就忽略 `site:`，让它们再走一遍引擎链只是多花一次请求、多一份噪音。
+   */
+  directOnly?: boolean;
   color: string;
 }
 
@@ -100,6 +108,71 @@ export const SITE_TARGETS: Record<SiteKey, SiteTarget> = {
     contentLimited: true,
     color: "#1d9bf0",
   },
+  /*
+    掘金。走的是**普通站点**那条路（引擎链 + 域名过滤），不是主题源。
+
+    它有真实域名、文章正文在公开页面上，`resolveSite()` 判得中，抓取层也拿得到
+    正文 —— 与知乎同构。**没有为它写直连 provider**：掘金的站内搜索接口要
+    `X-Legal-Signature` 之类的签名头，属于用户明令不碰的那一类
+    （见 AGENTS 里的红线），所以这里只借搜索引擎的索引。
+
+    代价要说清楚：能否搜到完全取决于 bing 是否收录了相关文章。
+    那一栏空着是上游事实，不是 bug。
+  */
+  juejin: {
+    key: "juejin",
+    label: "掘金",
+    domain: "juejin.cn",
+    keyword: "掘金",
+    kind: "article",
+    color: "#1e80ff",
+  },
+  /*
+    下面三个是「主题源」：各有自己的公开接口，一个主题查一次，不走引擎链。
+
+    ── HN 的 domain 为什么是空串 ──
+
+    `README` 里那条规则是「SiteKey 表示内容住在哪」，`resolveSite()` 按域名
+    反查。GitHub / arXiv 有真实域名，且它们的 API 返回的就是该域名下的内容，
+    所以填域名。
+
+    HN 不一样：它的条目是**指向别处**的链接 —— 一条 HN story 的内容可能住在
+    github.com、可能住在某个人的博客。把 hackernews 也填上 news.ycombinator.com，
+    那条 GitHub 链接就会被 `resolveSite` 标成「来自 Hacker News」，而它明明
+    是一篇 GitHub 仓库 —— 归属错了，且这种错比「空着」难发现得多。
+
+    所以这三个里只有 HN 留空 domain：**它只作为「要不要查这个源」的开关，
+    以及 UI 上的一个芯片**，不参与归属判定。HN 结果的出处由 `provider` 字段
+    承载（界面上的「按来源分组」视图看的就是它）。
+  */
+  hackernews: {
+    key: "hackernews",
+    label: "Hacker News",
+    shortLabel: "HN",
+    domain: "",
+    keyword: "",
+    kind: "unknown",
+    directOnly: true,
+    color: "#ff6600",
+  },
+  github: {
+    key: "github",
+    label: "GitHub",
+    domain: "github.com",
+    keyword: "",
+    kind: "article",
+    directOnly: true,
+    color: "#8b949e",
+  },
+  arxiv: {
+    key: "arxiv",
+    label: "arXiv",
+    domain: "arxiv.org",
+    keyword: "",
+    kind: "article",
+    directOnly: true,
+    color: "#b31b1b",
+  },
   web: {
     key: "web",
     label: "全网",
@@ -113,13 +186,54 @@ export const SITE_TARGETS: Record<SiteKey, SiteTarget> = {
 /** 界面上站点芯片的排列顺序。取自注册表的声明顺序。 */
 export const SITE_ORDER = Object.keys(SITE_TARGETS) as SiteKey[];
 
-/** 默认勾选的站点。'web' 始终兜底。 */
+/**
+ * 默认勾选的站点。'web' 始终兜底。
+ *
+ * 三个主题源默认打开：它们是**补充**，不是替代 —— arXiv 与 HN 完全可靠，
+ * GitHub 未认证时有 10 次/分的配额（超了会返回空结果并在检索日志里写明
+ * 原因，不会让整次搜索失败）。
+ */
 export const DEFAULT_SITES: SiteKey[] = [
   "zhihu",
+  "juejin",
   "bilibili",
   "youtube",
+  "hackernews",
+  "github",
+  "arxiv",
   "web",
 ];
+
+/** 该站点是否只由自己的 provider 检索（即不参与搜索引擎链）。 */
+export function isDirectOnly(site: SiteKey): boolean {
+  return SITE_TARGETS[site]?.directOnly === true;
+}
+
+/**
+ * provider 的展示名。
+ *
+ * **为什么不放在 `registry.ts`**：那里 import 了三个 provider 模块，而它们
+ * 又 import `@/core/fetch/agent` 和 `normalize`（`node:crypto`）。这个表要被
+ * `"use client"` 的 `SearchPanel` 用，从那边引会把 node 模块拖进浏览器包。
+ * 放这里是因为 `sites.ts` 只依赖 `@/core/types`，是现成的「命名注册表」。
+ *
+ * 键用 `string` 而不是 `ProviderId`：日志是从 session.json 读回来的，
+ * 可能是旧版本写下的 provider 名。认不出来原样返回，显示 `foo` 好过 `undefined`。
+ */
+const PROVIDER_LABELS: Record<string, string> = {
+  serper: "Serper",
+  searxng: "SearXNG",
+  ytdlp: "yt-dlp",
+  bilibili: "B 站接口",
+  hackernews: "Hacker News",
+  github: "GitHub API",
+  arxiv: "arXiv",
+};
+
+/** provider 展示名。认不出来则原样返回。 */
+export function providerLabel(provider: string): string {
+  return PROVIDER_LABELS[provider] ?? provider;
+}
 
 /**
  * 构造查询串。
@@ -183,7 +297,16 @@ export function belongsToDomain(url: string, domain: string): boolean {
   }
 }
 
-/** 从 URL 反查站点归属。用于把搜索结果归类。 */
+/**
+ * 从 URL 反查站点归属。用于把搜索结果归类。
+ *
+ * 走 `belongsToDomain` 而不是自己写 `host.endsWith(domain)`：裸后缀匹配会让
+ * `notzhihu.com` / `eviljuejin.cn` 这类域名被判成对应站点 —— 它们只是**以**
+ * 那个域名结尾，跟它没有任何关系。`belongsToDomain` 要求恰好相等或多一级子域。
+ *
+ * `target.domain` 为空的（HN / 全网）必须跳过：空的 domain 在
+ * `belongsToDomain` 里表示「不做过滤」，直接传进去会命中一切。
+ */
 export function resolveSite(url: string): SiteKey {
   let host: string;
   try {
@@ -192,9 +315,9 @@ export function resolveSite(url: string): SiteKey {
     return "web";
   }
   for (const target of Object.values(SITE_TARGETS)) {
-    if (target.domain && host.endsWith(target.domain)) return target.key;
+    if (target.domain && belongsToDomain(url, target.domain)) return target.key;
   }
   // 常见的 X 域名变体
-  if (host.endsWith("twitter.com")) return "x";
+  if (host === "twitter.com" || host.endsWith(".twitter.com")) return "x";
   return "web";
 }
