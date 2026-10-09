@@ -71,6 +71,61 @@ export const config = {
   /** 单次 LLM 请求的超时。默认给足 5 分钟：几十篇长文的抽取本来就是慢活。 */
   llmTimeoutMs: Number(process.env.LLM_TIMEOUT_MS ?? 300_000),
   enablePlaywright: process.env.ENABLE_PLAYWRIGHT === "true",
+
+  /*
+    ── 搜索条数 ──
+
+    原先这三个数写死在 orchestrate.ts / registry.ts 里（每站 10、youtube 15 等），
+    调一下就得改代码。上提到 config 之后仍然保留原值作默认，避免默认行为突变。
+
+    **实测结论（2026-10，本机 SearXNG + bing/duckduckgo/startpage/mojeek 四引擎）**：
+    把每站上限从 10 提到 20 **不增加任何网络耗时** —— `limit` 是响应回来之后的
+    `.slice()`（见 search/searxng.ts:98），上游请求逐字节相同，三次查询的耗时
+    差异（3.0s / 1.4s / 1.2s）纯粹是网络抖动。所以这里不存在「提条数就要等更久」
+    的取舍，不需要为了赶时间退回 12。
+
+    但收益是**有上限的**，因为搜多搜少由上游引擎决定：
+
+      | 查询                     | 引擎实际给出 | 旧的 10 条上限丢掉了 |
+      |--------------------------|--------------|----------------------|
+      | DeepSeek-V4.1-Flash      | 10           | 0 条                 |
+      | linux                    | 13           | 3 条                 |
+      | python asyncio           | 20           | 10 条                |
+
+    也就是说：用户那个具体查询本来就只有 10 条可拿，**提到 20 对它毫无帮助** ——
+    它的问题是「拿到的这 10 条里有 7 条不切题」，那是 P12.3 相关性判定要解决的，
+    不是条数问题。提条数只对宽泛主题（能拿到 11~20 条的那类）有效。
+
+    另一条已实测排掉的路线：**多页抓取**。SearXNG 的 `pageno=2/3` 在上面三个查询
+    （含 `linux` 这种极常见的词）上一律返回 **0 条**，所以「翻页凑够 40 条」在这套
+    引擎组合下走不通，不要再往那个方向试。
+  */
+  searchPerSiteLimit: Number(process.env.SEARCH_PER_SITE_LIMIT ?? 20),
+  /**
+   * 链上某条 provider 拿到这么多条就不再往链下游走（短路，见 orchestrate.ts 的
+   * `ENOUGH_RESULTS`）。**保持 4 不要动**：它管的是「还要不要多打一次付费 provider」，
+   * 调高会让每次搜索都为一点边际覆盖多付一次钱，而且多出来的结果正好是相关性判定
+   * 要标的那批噪音。
+   */
+  searchEnoughResults: Number(process.env.SEARCH_ENOUGH_RESULTS ?? 4),
+  searchYoutubeLimit: Number(process.env.SEARCH_YOUTUBE_LIMIT ?? 20),
+  searchBilibiliLimit: Number(process.env.SEARCH_BILIBILI_LIMIT ?? 20),
+  /**
+   * 话题型 provider（HN / GitHub / arXiv / RSS）各自的条数。
+   *
+   * 这几个不跟 `searchPerSiteLimit` 走，因为它们的「一条」成本差很多：arXiv 与
+   * GitHub 走的是官方 API（有速率限制），RSS 是直接拉别人的 feed。混在一个数里
+   * 会让调其中一个必然误伤另一个。
+   *
+   * 当前值与原写死值一致 —— 这一轮只是把它们挪进 config，不改默认行为。
+   */
+  searchTopicLimit: {
+    hackernews: Number(process.env.SEARCH_HN_LIMIT ?? 15),
+    github: Number(process.env.SEARCH_GITHUB_LIMIT ?? 10),
+    arxiv: Number(process.env.SEARCH_ARXIV_LIMIT ?? 10),
+    rss: Number(process.env.SEARCH_RSS_LIMIT ?? 20),
+  } as Record<string, number>,
+
   fetchTimeoutMs: Number(process.env.FETCH_TIMEOUT_MS ?? 15_000),
   fetchMaxBytes: Number(process.env.FETCH_MAX_BYTES ?? 5 * 1024 * 1024),
   downloadConcurrency: Number(process.env.DOWNLOAD_CONCURRENCY ?? 3),

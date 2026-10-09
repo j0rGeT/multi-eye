@@ -551,7 +551,19 @@ export type SearchEvent =
  * 而且用户往往只想看前几篇的质量决定要不要继续等。
  */
 export type FetchEvent =
-  | { type: "plan"; total: number; skipped: number }
+  | {
+      type: "plan";
+      total: number;
+      skipped: number;
+      /**
+       * 其中有多少条是**因为疑似不相关而跳过**的。
+       *
+       * 与 `skipped` 分开报，是因为两者的处置完全不同：`skipped` 是用户
+       * 自己选的范围（勾了部分站点/结果），不必解释；这一条是程序替他做的
+       * 决定，**必须说出来**，否则用户只会觉得「抓取少了几条，是不是坏了」。
+       */
+      skippedIrrelevant: number;
+    }
   | { type: "doc"; doc: Document; done: number; total: number }
   | {
       type: "done";

@@ -22,6 +22,13 @@ interface FetchBody {
   /** 只抓这些站点。与 resultIds 二选一。 */
   sites?: SiteKey[];
   concurrency?: number;
+  /**
+   * 连疑似不相关的也抓。
+   *
+   * 默认 false —— 详见 `pickTargets` 上关于「标记但不删除 ≠ 为它花抓取成本」
+   * 的说明。显式传了 `resultIds` 时这个开关没有意义（那批本来就不筛）。
+   */
+  includeIrrelevant?: boolean;
 }
 
 /**
@@ -53,13 +60,14 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: `会话不存在：${sessionId}` }, { status: 404 });
   }
 
-  const targets = pickTargets(session.results, body);
+  const { targets, skippedIrrelevant } = pickTargets(session.results, body);
 
   return sseResponse<FetchEvent>(async (emit) => {
     emit({
       type: "plan",
       total: targets.length,
       skipped: session.results.length - targets.length,
+      skippedIrrelevant,
     });
 
     if (targets.length === 0) {
@@ -123,20 +131,45 @@ export async function POST(req: NextRequest) {
   }, req.signal);
 }
 
-/** 决定这次抓哪些结果：显式的 resultIds 优先，其次 sites，最后全量。 */
+/**
+ * 决定这次抓哪些结果：显式的 resultIds 优先，其次 sites，最后全量。
+ *
+ * ── 疑似不相关的默认跳过（P12.4）──
+ *
+ * 「标记但不删除」这条主张管的是**资料本身**（它照样在列表、报告、包里），
+ * 不管**要不要为它花抓取成本**：每条要几秒到几十秒，一批里混进几条跑题的，
+ * 用户就是在为噪音等。所以默认跳过，但留了三条明确的退路 ——
+ *
+ *   1. 显式给了 `resultIds` → **原样尊重**，不筛。这就是手动恢复路径
+ *      （在界面上勾上那几条再抓），也是 e2e 走的路径
+ *   2. `includeIrrelevant: true` → 全都要，一条不跳
+ *   3. 每一条跳过的都在 `plan` 事件里报数，界面照实说「已跳过 N 条」
+ *
+ * 跳过的文档**不会**凭空消失：它们的 `relevance` 留在 session.json 里，
+ * 只是这一轮没抓正文。抓取结果始终是「搜索结果的子集」，从不覆盖全量。
+ */
 function pickTargets(
   results: SearchResult[],
   body: FetchBody,
-): SearchResult[] {
+): { targets: SearchResult[]; skippedIrrelevant: number } {
+  let picked: SearchResult[];
   if (body.resultIds?.length) {
+    // 显式点名的不筛 —— 用户点了这几条，他的意图优先于任何自动判断
     const wanted = new Set(body.resultIds);
-    return results.filter((r) => wanted.has(r.id));
-  }
-  if (body.sites?.length) {
+    picked = results.filter((r) => wanted.has(r.id));
+  } else if (body.sites?.length) {
     const wanted = new Set(body.sites);
-    return results.filter((r) => wanted.has(r.site));
+    picked = results.filter((r) => wanted.has(r.site));
+  } else {
+    picked = results;
   }
-  return results;
+
+  if (body.includeIrrelevant || body.resultIds?.length) {
+    return { targets: picked, skippedIrrelevant: 0 };
+  }
+
+  const targets = picked.filter((r) => r.relevance?.verdict !== "unlikely");
+  return { targets, skippedIrrelevant: picked.length - targets.length };
 }
 
 /**

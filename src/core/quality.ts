@@ -79,7 +79,9 @@ export const BODY_GRADE_LABELS: Record<BodyGrade, string> = {
  * 「界面说 16 篇优质」和「包里 16 个正文文件」是**同一个判断**得出的。
  */
 export function isPackageWorthy(doc: Document): boolean {
-  return bodyGrade(doc) === "full";
+  // 相关性只在**判死**时作数。`uncertain` 与「未判定」（旧会话没有这个字段）
+  // 一律放行 —— 把「没测过」读成「测出来是坏的」是最容易犯、也最难发现的一类错。
+  return bodyGrade(doc) === "full" && doc.relevance?.verdict !== "unlikely";
 }
 
 /**
@@ -91,6 +93,16 @@ export function isPackageWorthy(doc: Document): boolean {
  */
 export function whyNotPackaged(doc: Document): string {
   if (doc.error) return doc.error;
+  /*
+    相关性排在「正文有问题」前面。
+
+    顺序是有讲究的：「这篇正文很完整，只是不像你要找的东西」和「这篇只有
+    摘要」是两件完全不同的事，前者是**判定结果**、后者是**抓取缺陷**。
+    把判定结果排在前面，用户才不会去琢磨「是不是抓取坏了」。
+  */
+  if (doc.relevance?.verdict === "unlikely") {
+    return `疑似与主题不相关：${doc.relevance.reason}`;
+  }
   if (doc.extractMethod === "raw") return "没有抓到正文，正文是搜索摘要";
   const chars = doc.text.trim().length;
   if (chars >= THIN_BODY_CHARS) return `正文偏短（${chars} 字，需 ≥${FULL_BODY_CHARS} 字）`;
@@ -103,6 +115,21 @@ export interface QualitySummary {
   counts: Record<BodyGrade, number>;
   /** 有正文（full + thin）的比例。 */
   bodyRatio: number;
+  /**
+   * 够格进下载包的篇数 —— 也就是 `isPackageWorthy` 为真的条数。
+   *
+   * **必须由 `isPackageWorthy` 数出来**，不能另写一遍条件。P11 立下的不变量是
+   * 「`X-Package-Included` 头 == 包内正文文件数 == 界面上说的优质篇数」，
+   * 而三者相等的唯一保证就是它们调同一个函数。
+   */
+  packable: number;
+  /**
+   * 正文够格、但**因为疑似不相关**被挡在包外的篇数。
+   *
+   * 单独计是为了让界面能说清「有几篇是好文章，只是不像你要找的」——
+   * 只说「N 篇没进包」会让用户去怀疑抓取，而这几篇的正文其实好好的。
+   */
+  excludedIrrelevant: number;
 }
 
 /** 一批文档的正文可用性概览。报告与 UI 的进度提示都用它。 */
@@ -115,5 +142,9 @@ export function qualitySummary(docs: readonly Document[]): QualitySummary {
     total,
     counts,
     bodyRatio: total === 0 ? 0 : (counts.full + counts.thin) / total,
+    packable: docs.filter(isPackageWorthy).length,
+    excludedIrrelevant: docs.filter(
+      (d) => bodyGrade(d) === "full" && d.relevance?.verdict === "unlikely",
+    ).length,
   };
 }

@@ -75,10 +75,19 @@ export interface SearchPanelProps {
   onFetch: () => void;
   fetching: boolean;
   fetchProgress: { done: number; total: number } | null;
+  /**
+   * 抓取开始前的一句告知（目前只用于「跳过了 N 条疑似不相关的」）。
+   *
+   * 必须有这么一处：跳过的文档不会出现在进度条里，不说明的话用户只知道
+   * 「我勾了 35 条，怎么只抓了 28 条」。
+   */
+  fetchNotice: string | null;
 
   onBuildGraph: () => void;
   building: boolean;
   graphError: string | null;
+  /** 构图成功后的一句告知（目前只用于「N 篇疑似不相关，没进图」）。 */
+  graphNotice: string | null;
   hasGraph: boolean;
 }
 
@@ -87,8 +96,8 @@ export default function SearchPanel(props: SearchPanelProps) {
     query, onQueryChange, sites, onToggleSite, onSearch, searching,
     timeRange, onTimeRangeChange, sortMode, onSortModeChange, timeFilter,
     plan, results, logs, siteCounts,
-    documents, onFetch, fetching, fetchProgress,
-    onBuildGraph, building, graphError, hasGraph,
+    documents, onFetch, fetching, fetchProgress, fetchNotice,
+    onBuildGraph, building, graphError, graphNotice, hasGraph,
   } = props;
 
   const allSites = SITE_ORDER;
@@ -333,6 +342,19 @@ export default function SearchPanel(props: SearchPanelProps) {
             {documents.length === 0 && !fetching && (
               <p className="dim" style={{ fontSize: 12, margin: 0 }}>
                 拓扑基于正文构建。摘要太短，用它构图只会得到一张按标题匹配的假图。
+              </p>
+            )}
+
+            {fetchNotice && (
+              <p className="dim" style={{ fontSize: 12, margin: 0 }}>
+                {fetchNotice}
+              </p>
+            )}
+
+            {/* 构图成功但少了几篇 —— 用 dim 而不是红色：这不是错误 */}
+            {graphNotice && (
+              <p className="dim" style={{ fontSize: 12, margin: 0 }}>
+                {graphNotice}
               </p>
             )}
 

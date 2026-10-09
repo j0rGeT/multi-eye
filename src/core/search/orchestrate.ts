@@ -56,11 +56,22 @@ const CONCURRENCY: Record<string, number> = {
   topic: 2,
 };
 
-/** 一个站点拿到这么多结果就不再往链下游走。 */
-const ENOUGH_RESULTS = 4;
+/**
+ * 一个站点拿到这么多结果就不再往链下游走。
+ *
+ * 值在 env.ts 里（`SEARCH_ENOUGH_RESULTS`），**默认 4 不要随手抬高** ——
+ * 它管的是「还要不要多打一次付费 provider」，理由写在那边。
+ */
+const ENOUGH_RESULTS = config.searchEnoughResults;
 
-/** 每站点的抓取条数。 */
-const PER_SITE_LIMIT = 10;
+/**
+ * 每站点的抓取条数。
+ *
+ * 值在 env.ts 里（`SEARCH_PER_SITE_LIMIT`）。那边记着实测：从 10 提到 20
+ * **不增加任何网络耗时**（limit 是响应之后的 slice），所以这里没有「提条数
+ * 就要等更久」的取舍；但收益受上游引擎给多少条限制，已知上限大约 20。
+ */
+const PER_SITE_LIMIT = config.searchPerSiteLimit;
 
 /**
  * 主题源整组的软预算。
@@ -165,8 +176,8 @@ export async function searchAll(
     limit: number;
     ok: boolean;
   }[] = [
-    { site: "youtube", provider: ytdlp, limit: 15, ok: ytdlpOk },
-    { site: "bilibili", provider: bilibili, limit: 20, ok: bilibiliOk },
+    { site: "youtube", provider: ytdlp, limit: config.searchYoutubeLimit, ok: ytdlpOk },
+    { site: "bilibili", provider: bilibili, limit: config.searchBilibiliLimit, ok: bilibiliOk },
   ];
 
   const allLogs: ProviderLogEntry[] = [];

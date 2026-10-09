@@ -415,6 +415,7 @@ try {
   */
   const targets = interleaveBySite(results_, FETCH_LIMIT).map((r) => r.id);
   documents = [];
+  let fetchPlan = null;
 
   const [, fetchMs] = await timed(() =>
     sse(`${BASE}/api/fetch`, {
@@ -423,6 +424,7 @@ try {
       body: JSON.stringify({ sessionId, resultIds: targets, concurrency: 4 }),
     }, (ev) => {
       if (ev.type === "plan") {
+        fetchPlan = ev;
         debug(`plan: ${ev.total} 篇（跳过 ${ev.skipped}）`);
       } else if (ev.type === "doc") {
         documents.push(ev.doc);
@@ -444,6 +446,26 @@ try {
 
   check("抓取", "逐篇回传了文档", documents.length === targets.length, `${documents.length}/${targets.length} 篇 / ${fetchMs}ms`);
   check("抓取", "至少 1 篇拿到正文", withBody.length > 0, `${withBody.length} 篇正文，${fallback.length} 篇退化为摘要`);
+
+  /*
+    显式点名 `resultIds` 时**不做相关性过滤**（P12.4）。
+
+    这一步是有意这么设计的：那条路径就是「手动恢复」——用户自己勾了这几条，
+    他的意图优先于任何自动判断。所以这里既检查字段确实报了数，也检查
+    「点名即豁免」这条语义没有被后来的改动悄悄绕过。
+  */
+  check(
+    "抓取",
+    "plan 事件带 skippedIrrelevant（排除传导可观测）",
+    typeof fetchPlan?.skippedIrrelevant === "number",
+    `skippedIrrelevant=${fetchPlan?.skippedIrrelevant}`,
+  );
+  check(
+    "抓取",
+    "显式点名 resultIds 时不筛相关性（手动恢复路径）",
+    fetchPlan?.skippedIrrelevant === 0,
+    `点名 ${targets.length} 条，跳过 ${fetchPlan?.skippedIrrelevant} 条 —— 点名路径应为 0`,
+  );
 
   /**
    * **每一次降级都必须写明了原因** —— 这条比「正文比例」重要得多。
@@ -828,6 +850,77 @@ try {
       "中文主题弃权（不做词法判定）",
       lexicalRelevance(at("Camping Gear Guide", ""), cjkPlan).verdict === "uncertain",
       latinHead(cjkPlan) === null ? "没有拉丁词根 → uncertain" : `**latinHead 应为 null，实得 ${latinHead(cjkPlan)}**`,
+    );
+  }
+
+  // ── 6.8 打包不变量：相关性只降不升 ──────────────────────────
+  //
+  // P12.4 把 `isPackageWorthy` 从「正文完整」扩成「正文完整 **且** 不疑似跑题」。
+  // 这条判据同时决定三处的数字：ZIP 里的正文文件数、`X-Package-Included` 头、
+  // 界面上「优质 N 篇」。三者相等唯一的保证就是它们调同一个函数 —— 所以这里
+  // 钉住的是**函数本身**，任何一处绕过它去另写条件，都会在这里露馅。
+  //
+  // 同样重要的是「未判定 ≠ 不相关」：旧会话没有 `relevance` 字段，绝不能
+  // 因为「没测过」就被判成坏的。
+  step("6.8 打包不变量（相关性只降不升）");
+
+  let isPackageWorthy = null;
+  let whyNotPackaged = null;
+  try {
+    ({ isPackageWorthy, whyNotPackaged } = await import("../src/core/quality.ts"));
+  } catch (err) {
+    soft("打包不变量", "能加载 quality.ts", `跳过：当前 Node 不支持直接跑 .ts（${err.message}）`);
+  }
+
+  if (isPackageWorthy) {
+    // 300 字是 FULL_BODY_CHARS 的下限，这里给足，确保走的是 full 分支
+    const body = "正文".repeat(200);
+    const doc = (over = {}) => ({
+      id: "d",
+      url: "https://example.com/a",
+      title: "t",
+      text: body,
+      markdown: "",
+      wordCount: 400,
+      extractMethod: "readability",
+      ...over,
+    });
+    const unlikely = { verdict: "unlikely", reason: "标题与摘要里都没有出现「deepseek」", source: "lexical" };
+
+    check(
+      "打包不变量",
+      "正文完整 + 疑似跑题 → 不进包",
+      isPackageWorthy({ ...doc(), relevance: unlikely }) === false,
+      String(isPackageWorthy({ ...doc(), relevance: unlikely })),
+    );
+    check(
+      "打包不变量",
+      "正文完整 + 未判定（旧会话无该字段）→ 照常进包",
+      isPackageWorthy(doc()) === true && isPackageWorthy({ ...doc(), relevance: undefined }) === true,
+      "undefined 必须读成「未判定」而不是「不相关」",
+    );
+    check(
+      "打包不变量",
+      "正文完整 + uncertain → 照常进包",
+      isPackageWorthy({ ...doc(), relevance: { verdict: "uncertain", reason: "中文主题弃权", source: "lexical" } }) === true,
+      "只有判死的 unlikely 才排除",
+    );
+    check(
+      "打包不变量",
+      "正文完整 + likely → 进包",
+      isPackageWorthy({ ...doc(), relevance: { verdict: "likely", reason: "出现了「deepseek」", source: "lexical" } }) === true,
+    );
+    check(
+      "打包不变量",
+      "没进包的原因先讲相关性、再讲正文",
+      whyNotPackaged({ ...doc(), relevance: unlikely }).includes("疑似与主题不相关"),
+      whyNotPackaged({ ...doc(), relevance: unlikely }),
+    );
+    check(
+      "打包不变量",
+      "正文只有摘要时仍按抓取缺陷解释（相关性不背这个锅）",
+      whyNotPackaged({ ...doc(), extractMethod: "raw" }).includes("搜索摘要"),
+      whyNotPackaged({ ...doc(), extractMethod: "raw" }),
     );
   }
 

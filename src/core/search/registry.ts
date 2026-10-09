@@ -25,6 +25,7 @@
  */
 
 import type { SearchProvider, SiteKey } from "@/core/types";
+import { config } from "@/core/env";
 import { HackerNewsProvider } from "./hackernews";
 import { GitHubProvider } from "./github";
 import { ArxivProvider } from "./arxiv";
@@ -41,16 +42,16 @@ export interface TopicTarget {
 /** 主题源清单。顺序即装配顺序。 */
 function allTopicTargets(): { site: SiteKey; provider: SearchProvider; limit: number }[] {
   return [
-    { site: "hackernews", provider: new HackerNewsProvider(), limit: 15 },
+    { site: "hackernews", provider: new HackerNewsProvider(), limit: config.searchTopicLimit.hackernews },
     // GitHub 的 limit 给得小：每多要一条不会多花请求（per_page 是一次性的），
     // 但结果太多会把长尾练手仓库混进来，10 条足够覆盖一个主题的主流项目
-    { site: "github", provider: new GitHubProvider(), limit: 10 },
-    { site: "arxiv", provider: new ArxivProvider(), limit: 10 },
+    { site: "github", provider: new GitHubProvider(), limit: config.searchTopicLimit.github },
+    { site: "arxiv", provider: new ArxivProvider(), limit: config.searchTopicLimit.arxiv },
     /*
       RSS 给的条数比别的高：它的「命中」本来就是用户自己订阅的内容，
       信噪比比搜索引擎高得多，多给几条不至于把噪音带进来。
     */
-    { site: "rss", provider: new RssProvider(), limit: 20 },
+    { site: "rss", provider: new RssProvider(), limit: config.searchTopicLimit.rss },
   ];
 }
 

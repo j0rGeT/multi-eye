@@ -60,11 +60,20 @@ export default function Home() {
     done: number;
     total: number;
   } | null>(null);
+  /**
+   * 抓取前的告知。目前只有一件事要说：默认跳过了几条疑似不相关的。
+   *
+   * 跳过的文档不占进度条的任何一格，不说的话用户只知道「勾了 35 条、
+   * 只跑了 28 条」，会当成抓取漏了。
+   */
+  const [fetchNotice, setFetchNotice] = useState<string | null>(null);
   const [documents, setDocuments] = useState<Document[]>([]);
 
   const [building, setBuilding] = useState(false);
   const [graph, setGraph] = useState<GraphModel | null>(null);
   const [graphError, setGraphError] = useState<string | null>(null);
+  /** 构图成功、但有几篇没进图时的说明（与 graphError 互斥）。 */
+  const [graphNotice, setGraphNotice] = useState<string | null>(null);
   const [selected, setSelected] = useState<GraphNode | null>(null);
   const [showDocuments, setShowDocuments] = useState(true);
 
@@ -249,6 +258,7 @@ export default function Home() {
 
     setFetching(true);
     setFetchProgress(null);
+    setFetchNotice(null);
 
     try {
       await postSse<FetchEvent>(
@@ -258,6 +268,12 @@ export default function Home() {
           switch (e.type) {
             case "plan":
               setFetchProgress({ done: 0, total: e.total });
+              setFetchNotice(
+                e.skippedIrrelevant > 0
+                  ? `已跳过 ${e.skippedIrrelevant} 条疑似与主题不相关的结果（它们仍在列表里；` +
+                    `想抓的话在结果里勾选这几条，再点一次抓取）`
+                  : null,
+              );
               break;
             case "doc":
               setFetchProgress({ done: e.done, total: e.total });
@@ -288,6 +304,7 @@ export default function Home() {
     if (!sessionId || building) return;
     setBuilding(true);
     setGraphError(null);
+    setGraphNotice(null);
     setSelected(null);
 
     try {
@@ -302,6 +319,7 @@ export default function Home() {
         error?: string;
         usedDocuments?: number;
         ignoredDocuments?: number;
+        ignoredIrrelevant?: number;
         tokenizer?: string;
       };
 
@@ -309,10 +327,24 @@ export default function Home() {
         // 路由用 409 表达「正文不够，无法构图」，这不算错误而是一种状态，
         // 用户看到原因就够了
         setGraphError(data.error ?? `HTTP ${res.status}`);
+        setGraphNotice(null);
         return;
       }
 
       setGraph(data.graph);
+      /*
+        把「有几篇没进图」说出来。
+
+        图是这批资料的一张结构图，读者看不见图里少了什么 —— 不说的话，
+        一篇跑题资料被排除这件事在界面上就是**静默发生**的，正好违反这套
+        系统「绝不静默丢东西」的主张。所以这里照实报数，并说清它们在哪。
+      */
+      const ignored = data.ignoredIrrelevant ?? 0;
+      setGraphNotice(
+        ignored > 0
+          ? `有 ${ignored} 篇正文完整、但疑似与主题不相关的资料没有进图（它们仍在右侧列表里，也逐条记在报告的「未收录」一节）`
+          : null,
+      );
       setShowDocuments(true);
       // 重构图产出的是一张新的图（节点集合可能完全不同），旧坐标不该沿用
       setViewState(undefined);
@@ -465,9 +497,11 @@ export default function Home() {
               onFetch={runFetch}
               fetching={fetching}
               fetchProgress={fetchProgress}
+              fetchNotice={fetchNotice}
               onBuildGraph={runBuildGraph}
               building={building}
               graphError={graphError}
+              graphNotice={graphNotice}
               hasGraph={graph !== null}
             />
           )}

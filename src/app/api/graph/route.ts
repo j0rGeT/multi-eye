@@ -76,9 +76,31 @@ export async function POST(req: NextRequest) {
    * 确实是正文只是短）的文档也一起挡在图外，比现状更激进。带 error 才是
    * 「这篇的内容不可信」的准确判据。
    */
+  /*
+    疑似不相关的也不进图（P12.4）。
+
+    图是「这个主题由哪些概念、通过哪些资料连起来」的一张结构图，一张跑题的
+    资料会往图里塞进整簇无关概念 —— 那是**污染结构**，比列表里多一条噪音
+    严重得多。列表仍然显示它们（只标记不删除），但图不掺。
+
+    与打包同一档口径：**只有判死的 `unlikely` 才排除**，`uncertain` 与
+    「未判定」都放行。`ignoredIrrelevant` 单独计数报出去，这样界面能说清
+    「有 N 篇是因为不像你要找的才没进图」，而不是让用户以为抓取坏了。
+  */
   const usable = session.documents.filter(
-    (d) => !d.error && d.extractMethod !== "raw" && d.wordCount >= 30,
+    (d) =>
+      !d.error &&
+      d.extractMethod !== "raw" &&
+      d.wordCount >= 30 &&
+      d.relevance?.verdict !== "unlikely",
   );
+  const ignoredIrrelevant = session.documents.filter(
+    (d) =>
+      !d.error &&
+      d.extractMethod !== "raw" &&
+      d.wordCount >= 30 &&
+      d.relevance?.verdict === "unlikely",
+  ).length;
 
   if (usable.length === 0) {
     return Response.json(
@@ -113,6 +135,8 @@ export async function POST(req: NextRequest) {
       tokenizer: await tokenizerBackend(),
       usedDocuments: usable.length,
       ignoredDocuments: session.documents.length - usable.length,
+      /** 其中有多少篇是「正文没问题、只是疑似不相关」才没进图的。 */
+      ignoredIrrelevant,
     });
   } catch (err) {
     return Response.json(

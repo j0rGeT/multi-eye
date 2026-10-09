@@ -524,7 +524,7 @@ function QualityLine({ documents }: { documents: Document[] }) {
   const q = useMemo(() => qualitySummary(documents), [documents]);
   if (q.total === 0) return null;
 
-  const pct = Math.round((q.counts.full / q.total) * 100);
+  const pct = Math.round((q.packable / q.total) * 100);
 
   return (
     <div
@@ -538,15 +538,28 @@ function QualityLine({ documents }: { documents: Document[] }) {
       }}
     >
       <div>
-        <strong>优质 {q.counts.full} 篇</strong>
+        <strong>优质 {q.packable} 篇</strong>
         <span className="dim">
           （占 {pct}%） · {BODY_GRADE_LABELS.thin} {q.counts.thin} 篇 ·{" "}
           {BODY_GRADE_LABELS.snippet} {q.counts.snippet} 篇 · 共 {q.total} 篇
         </span>
       </div>
+      {/*
+        正文完整、只是跑题的那几篇单独说一句。
+
+        不说的话，用户会看到「正文完整 16 篇、优质 14 篇」这种对不上的数 ——
+        然后去怀疑抓取坏了。这几篇的正文其实好好的，是判定结果，不是故障。
+      */}
+      {q.excludedIrrelevant > 0 && (
+        <div className="dim" style={{ fontSize: 11, marginTop: 4 }}>
+          另有 {q.excludedIrrelevant} 篇正文完整、但疑似与主题不相关，因此没进包
+          —— 它们不是抓取失败，原因逐条写在包内「未收录.md」里。
+        </div>
+      )}
       <div className="dim" style={{ fontSize: 11, marginTop: 4 }}>
-        优质 = 正文 ≥300 字且抓取无错。这只说明**拿到了正文**，不说明内容对不对
-        —— 本工具不做事实核查。没进包的资料不会被丢弃，会逐条列在包内的「未收录.md」里。
+        优质 = 正文 ≥300 字、抓取无错，且未被判为疑似跑题。这只说明**拿到了正文、
+        也像是你要找的东西**，不说明内容对不对 —— 本工具不做事实核查。没进包的资料
+        不会被丢弃，会逐条列在包内的「未收录.md」里。
       </div>
     </div>
   );
@@ -568,7 +581,10 @@ function PackButton({
   documents: Document[];
 }) {
   const q = useMemo(() => qualitySummary(documents), [documents]);
-  const empty = q.counts.full === 0;
+  // 判据必须跟服务端打包用的 `isPackageWorthy` 是同一个 —— 这里数的是
+  // `q.packable`，不是 `q.counts.full`。两者差着「疑似跑题」那一档：
+  // 用 full 数会让按钮说「16 篇」而包里只有 14 个正文文件（P11 的不变量）。
+  const empty = q.packable === 0;
 
   return (
     <div style={{ marginBottom: 12 }}>
@@ -584,11 +600,11 @@ function PackButton({
         href={`/api/package?sessionId=${encodeURIComponent(sessionId ?? "")}`}
         title={
           empty
-            ? "这一批里没有一篇拿到完整正文，包里会只有报告和未收录清单"
+            ? "这一批里没有一篇同时满足「正文完整」和「不是疑似跑题」，包里会只有报告和未收录清单"
             : "报告 + 每篇优质资料的 Markdown + 字幕；配图需要先跑一次下载"
         }
       >
-        打包下载 ZIP（{q.counts.full} 篇优质）
+        打包下载 ZIP（{q.packable} 篇优质）
       </a>
       <div className="dim" style={{ fontSize: 11, marginTop: 5 }}>
         正文与报告**不需要**先跑下载，直接打包；配图和字幕要先跑一次上面的下载才有。
