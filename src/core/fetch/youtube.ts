@@ -13,7 +13,7 @@ import { promisify } from "node:util";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { config, hasYtdlp, ytdlpCommonArgs } from "@/core/env";
+import { config, hasYtdlp, ytdlpCommonArgs, ytdlpYoutubeArgs } from "@/core/env";
 import { limiter, withRetry } from "@/core/limit";
 import { normalizeToIso } from "@/core/dates";
 
@@ -88,6 +88,9 @@ export async function fetchTranscript(
     const baseArgs = [
       // 这个函数只服务 YouTube，一定走代理
       ...ytdlpCommonArgs(url),
+      // 换 android 端点绕过机器人墙 —— 没有它，被标记的出口 IP 下
+      // 这里会一律失败（见 env.ts 的 ytdlpYoutubeArgs）
+      ...ytdlpYoutubeArgs(),
       "--skip-download",
       /*
         顺手把元信息写成 JSON。

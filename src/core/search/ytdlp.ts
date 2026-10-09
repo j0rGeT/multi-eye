@@ -14,7 +14,7 @@ import type {
   SearchQuery,
   SearchResult,
 } from "@/core/types";
-import { config, hasYtdlp, ytdlpCommonArgs } from "@/core/env";
+import { config, hasYtdlp, ytdlpCommonArgs, ytdlpYoutubeArgs } from "@/core/env";
 import { resultId } from "./normalize";
 import { normalizeToIso } from "@/core/dates";
 import { compactSignals } from "@/core/signals";
@@ -69,6 +69,8 @@ export class YtDlpProvider implements SearchProvider {
       // 这里永远是 YouTube（上面已经挡掉了别的站点）。`ytsearch…` 不是 URL、
       // 解析不出主机名，`shouldProxy` 按「拿不准就走代理」处理 —— 正是想要的。
       ...ytdlpCommonArgs(`ytsearch${limit}:${q.text}`),
+      // 搜索走的是同一个被标记的出口 IP，同样要换端点（见 env.ts）
+      ...ytdlpYoutubeArgs(),
       "--dump-single-json",
       "--flat-playlist",
       `ytsearch${limit}:${q.text}`,

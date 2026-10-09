@@ -182,6 +182,14 @@ export function ytdlpCommonArgs(target: string): string[] {
   return args;
 }
 
+/**
+ * **只给 YouTube 用**的额外参数：换一个播放器端点，绕过机器人墙。
+ *
+ * 实现与实测记录在 `core/ytdlp-args.ts` —— 那边是零 import 的叶子模块，
+ * 所以 e2e 能直接引它做回归。这里只是转发，让三个调用点继续从 env 取。
+ */
+export { ytdlpYoutubeArgs } from "@/core/ytdlp-args";
+
 export function hasLLM(): boolean {
   return config.llmApiKey.length > 0;
 }

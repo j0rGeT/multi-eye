@@ -20,8 +20,9 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
 import type { Document, DownloadKind } from "@/core/types";
-import { config, ytdlpCommonArgs } from "@/core/env";
+import { config, ytdlpCommonArgs, ytdlpYoutubeArgs } from "@/core/env";
 import { httpFetch } from "@/core/fetch/agent";
+import { isYoutubeUrl } from "@/core/fetch/youtube";
 import { renderDocMarkdown, renderDocTranscript } from "@/core/export/docmarkdown";
 
 const execFileAsync = promisify(execFile);
@@ -356,6 +357,15 @@ async function downloadMedia(ctx: RunContext): Promise<number> {
       于是所有 B站视频下载都以「yt-dlp 退出码 1 / TLS 握手超时」告终。
     */
     ...ytdlpCommonArgs(doc.url),
+    /*
+      换 android 端点**只在 YouTube 上做**。
+
+      `--extractor-args` 的命名空间是 `youtube:`，传给 B 站时 yt-dlp 会
+      忽略它 —— 但这条路上 B 站是主力（媒体下载有一大半是 B 站视频），
+      「靠它自己忽略」不如**显式判一下**：万一将来 yt-dlp 改成对未知命名
+      空间报错，受影响的是整条 B 站下载链，而那种失败只会在真跑时才暴露。
+    */
+    ...(isYoutubeUrl(doc.url) ? ytdlpYoutubeArgs() : []),
     // 续传：yt-dlp 会接着 .part 文件下，与 HTTP 那条路的 Range 是同一目的
     "--continue",
     "--progress",

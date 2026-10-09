@@ -924,6 +924,44 @@ try {
     );
   }
 
+  // ── 6.9 YouTube 机器人墙绕行 ────────────────────────────────
+  //
+  // 我们的代理出口 IP 被 YouTube 标记，默认 client 一律「Sign in to confirm
+  // you're not a bot」。换 android 播放器端点可以过墙，**且不带 cookie、
+  // 不登录** —— 这一步钉住那个参数还在，以及它没有被塞进公共的 ytdlpCommonArgs
+  // （那就等于给 B 站也发了 youtube 命名空间的东西）。
+  //
+  // `ytdlp-args.ts` 是零 import 的叶子模块，所以能直接引。
+  step("6.9 YouTube 机器人墙绕行（参数存在且已作用域化）");
+
+  let ytdlpYoutubeArgs = null;
+  try {
+    ({ ytdlpYoutubeArgs } = await import("../src/core/ytdlp-args.ts"));
+  } catch (err) {
+    soft("YouTube 绕行", "能加载 ytdlp-args.ts", `跳过：当前 Node 不支持直接跑 .ts（${err.message}）`);
+  }
+
+  if (ytdlpYoutubeArgs) {
+    const args = ytdlpYoutubeArgs();
+    const i = args.indexOf("--extractor-args");
+    check(
+      "YouTube 绕行",
+      "带 --extractor-args youtube:player_client=android",
+      i >= 0 && args[i + 1] === "youtube:player_client=android",
+      args.join(" "),
+    );
+
+    // 作用域化：这个函数必须**只**吐 youtube 命名空间的东西，
+    // 才能保证 download/kinds.ts 只在 isYoutubeUrl 时才追加它
+    const namespaced = args.filter((a) => !a.startsWith("--")).every((a) => a.startsWith("youtube:"));
+    check(
+      "YouTube 绕行",
+      "参数只含 youtube: 命名空间（可以安全地按站点作用域化）",
+      namespaced,
+      args.join(" "),
+    );
+  }
+
   // ── 7. 下载 ────────────────────────────────────────────────
   step("7. 异步下载队列（SSE 推进度）");
 
