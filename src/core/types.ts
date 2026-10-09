@@ -115,8 +115,19 @@ export interface SearchResult {
    * 注意它不是「可信度」：一个病毒式假消息同样会被很多来源提到。
    * 它回答的是「有几个独立入口指向这里」，不是「有几个独立来源证实了它」——
    * 后者还要再排除同源转载（见 `Document.duplicateOf`）。
+   *
+   * **它是 `sources` 的长度**，不是「被报答了几次」。同一个 provider 可能在
+   * 多个站点桶里各返回一次同一个 URL（searxng 就会），那些是同一个入口。
    */
   hitCount: number;
+  /**
+   * 命中的 provider 列表（去重）。`hitCount === sources.length`。
+   *
+   * 存下来是为了界面上能说清「是哪几个来源」—— 只给一个数字，用户没法判断
+   * 这几个入口是不是同一类（比如三个都是搜索引擎，那印证力远不如
+   * 「一个搜索引擎 + 一个 Hacker News」）。
+   */
+  sources?: ProviderId[];
   publishedAt?: string;
   author?: string;
   thumbnail?: string;
@@ -194,6 +205,14 @@ export interface Document {
   fetchedAt: string;
   /** 命中大小上限被截断。显式标记，而不是静默截断。 */
   truncated?: boolean;
+  /**
+   * 与哪篇文档同源（转载）。值是**代表文档**的 id —— 抓取最早的那一篇。
+   *
+   * **只标记，不删除**：被标了也照样出现在结果列表、报告和下载里。
+   * 这个字段只改变一件事 —— 统计「独立出处」时，同一组的成员算一个。
+   * 见 `search/dedupe.ts` 开头关于「宁可漏判不可误判」的说明。
+   */
+  duplicateOf?: string;
   /**
    * 抓取失败的原因。注意：失败仍会产出 Document（正文退化为 snippet），
    * 而不是抛异常 —— 单篇失败不该中断整个主题的流程。

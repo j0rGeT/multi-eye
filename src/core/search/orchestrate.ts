@@ -9,6 +9,7 @@
  */
 
 import type {
+  ProviderId,
   ProviderLogEntry,
   ResultSignal,
   SearchProvider,
@@ -136,31 +137,48 @@ export async function searchAll(
   ];
 
   const allLogs: ProviderLogEntry[] = [];
-  const merged = new Map<string, SearchResult>();
 
-  /** 把新结果并入总表：同一 URL 被多个来源命中时累加 hitCount。 */
+  /**
+   * 融合总表。值是「结果 + 命中它的那组 provider」。
+   *
+   * ── 为什么要单独记一个集合，而不是直接 `hitCount += 1` ──
+   *
+   * 原来的写法每 absorb 一次就 +1，但**同一个 provider 会被调用多次** ——
+   * searxng 在 zhihu 桶和 web 桶里各跑一遍，同一条 URL 落进两个桶就会
+   * 被它自己记 +2。那不是两个独立来源，是同一个入口数了两遍。
+   *
+   * 按 provider 去重之后，`hitCount` 才真的是「有几个不同的入口指向这里」。
+   * 副作用是**一部分现有数字会变小** —— 这是修正，不是数据变差。
+   */
+  const merged = new Map<
+    string,
+    { result: SearchResult; sources: Set<ProviderId> }
+  >();
+
+  /** 把新结果并入总表。同一 URL 由不同 provider 命中时记为多个来源。 */
   const absorb = (results: SearchResult[]) => {
     for (const r of results) {
       const key = normalizeUrl(r.url);
       const existing = merged.get(key);
       if (existing) {
-        existing.hitCount += 1;
+        existing.sources.add(r.provider);
+        const target = existing.result;
         // 保留排名更靠前的那份元数据，但补齐对方有的字段
-        if (r.rank < existing.rank) {
-          existing.title = existing.title || r.title;
-          existing.publishedAt ??= r.publishedAt;
-          existing.thumbnail ??= r.thumbnail;
-          existing.author ??= r.author;
+        if (r.rank < target.rank) {
+          target.title = target.title || r.title;
+          target.publishedAt ??= r.publishedAt;
+          target.thumbnail ??= r.thumbnail;
+          target.author ??= r.author;
         } else {
-          existing.publishedAt ??= r.publishedAt;
-          existing.thumbnail ??= r.thumbnail;
-          existing.author ??= r.author;
-          existing.durationSec ??= r.durationSec;
-          existing.snippet = existing.snippet || r.snippet;
+          target.publishedAt ??= r.publishedAt;
+          target.thumbnail ??= r.thumbnail;
+          target.author ??= r.author;
+          target.durationSec ??= r.durationSec;
+          target.snippet = target.snippet || r.snippet;
         }
-        existing.signals = mergeSignals(existing.signals, r.signals);
+        target.signals = mergeSignals(target.signals, r.signals);
       } else {
-        merged.set(key, { ...r });
+        merged.set(key, { result: { ...r }, sources: new Set([r.provider]) });
       }
     }
   };
@@ -363,7 +381,14 @@ export async function searchAll(
     ]),
   ]);
 
-  const ranked = rankResults([...merged.values()], sortMode ?? "relevant");
+  // 收口：把来源集合落成 hitCount + sources，再排序
+  const flattened = [...merged.values()].map(({ result, sources }) => ({
+    ...result,
+    hitCount: sources.size,
+    sources: [...sources].sort(),
+  }));
+
+  const ranked = rankResults(flattened, sortMode ?? "relevant");
   const { kept, dropped, unknown } = filterByTime(ranked, timeRange);
 
   return { results: kept, log: allLogs, timeFilter: { dropped, unknown } };

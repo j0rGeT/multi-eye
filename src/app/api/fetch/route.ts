@@ -7,6 +7,7 @@ import type {
   SiteKey,
 } from "@/core/types";
 import { extractMany } from "@/core/fetch/extract";
+import { findDuplicates, markDuplicates } from "@/core/search/dedupe";
 import { loadSession, saveSession } from "@/core/store";
 import { sseResponse } from "@/core/sse";
 
@@ -97,17 +98,27 @@ export async function POST(req: NextRequest) {
     // 同一份内容可能被两个 URL 命中（不同站点转载），按 title+正文长度粗去重
     const deduped = dedupeDocuments(documents);
 
+    /*
+      同源转载识别。**放在抓取之后**：搜索阶段只有摘要，摘要太短、指纹不可靠
+      （见 `search/dedupe.ts` 开头）。
+
+      **只标记不删除** —— 被标了 duplicateOf 的文档照样留在结果里，只是
+      统计「独立出处」时和代表算一个。静默删掉其中一篇是这套系统最忌讳的事。
+    */
+    const dupes = await findDuplicates(deduped);
+    const marked = markDuplicates(deduped, dupes);
+
     await saveSession({
       ...session,
       topic: { ...session.topic, updatedAt: new Date().toISOString() },
-      documents: deduped,
+      documents: marked,
     });
 
     emit({
       type: "done",
       sessionId,
-      documents: deduped.length,
-      byMethod: tally(deduped),
+      documents: marked.length,
+      byMethod: tally(marked),
     });
   }, req.signal);
 }

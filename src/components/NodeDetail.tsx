@@ -136,6 +136,14 @@ export default function NodeDetail({
                   拿 fetchedAt 顶上会让人以为一篇旧文是刚发的。
                 */}
                 {doc.publishedAt && ` · 发布于 ${formatDate(doc.publishedAt)}`}
+                {/*
+                  同源转载。这里尤其要标出来：这个面板的作用就是让用户判断
+                  「这个概念有几篇资料在支撑」，而三篇其实是同一篇被转了三手，
+                  和有三种独立说法，是完全不同的证据强度。
+                */}
+                {doc.duplicateOf && (
+                  <span style={{ color: "var(--warn, #d29922)" }}> · 同源转载</span>
+                )}
               </div>
             </button>
           ))}

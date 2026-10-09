@@ -18,6 +18,7 @@ import { siteLabel } from "@/core/search/sites";
 import { SORT_LABELS, TIME_RANGE_LABELS } from "@/core/search/filter";
 import { dateCoverage, dateSpan, formatDate, formatDateTime, formatSpan } from "@/core/time";
 import { BODY_GRADE_LABELS, bodyGrade, qualitySummary } from "@/core/quality";
+import { independentSourceCount } from "@/core/search/dedupe";
 import { signalSummary } from "@/core/signals";
 import { clusterColor, clusterIndexMap } from "@/core/graph/palette";
 
@@ -219,6 +220,22 @@ function overview(session: Session, graphedCount: number): string {
     ],
     ["发布时间跨度", formatSpan(span) || "全部未知"],
   ];
+
+  /*
+    同源转载。只在真的检出重复时才出现这一行 —— 一个恒为「0 篇」的指标
+    没有信息量，还会让读者以为系统在盯着什么。
+
+    「独立出处」这个数是这套系统核心主张的**修正项**：多源印证的前提是
+    那几个来源真的互相独立。5 家媒体转载同一篇稿子看起来像 5 个来源，
+    实际上只有 1 个信息源。不把这一层摊开，印证度就是虚高的。
+  */
+  const dupeCount = documents.filter((d) => d.duplicateOf).length;
+  if (dupeCount > 0) {
+    rows.push([
+      "同源转载",
+      `${dupeCount} 篇与其它资料同源 · 独立出处 ${independentSourceCount(documents)}/${documents.length}`,
+    ]);
+  }
 
   if (opts?.timeRange) {
     rows.push(["时效窗口", TIME_RANGE_LABELS[opts.timeRange]]);
@@ -474,6 +491,8 @@ function fullSourceList(
   includeUrl: boolean,
 ): string {
   const docByUrl = new Map(session.documents.map((d) => [d.url, d]));
+  // 用来把 duplicateOf 的 id 还原成标题，标出「与《X》同源」
+  const docById = new Map(session.documents.map((d) => [d.id, d]));
 
   const hasSignals = session.results.some((r) => r.signals?.length);
 
@@ -498,9 +517,16 @@ function fullSourceList(
     const title = includeUrl
       ? `[${escapeLinkText(r.title || r.url)}](${r.url})`
       : escapeCell(r.title || r.url);
+    /*
+      同源转载标在正文列里，而不是删掉这一行 —— **只标记不删除**。
+      读者看到链接仍然能点进去，同时知道这一篇不是独立的信息源。
+    */
+    const dupeNote = doc?.duplicateOf
+      ? ` · 与《${docById.get(doc.duplicateOf)?.title ?? "…"}》同源`
+      : "";
     const content = !doc
       ? "未抓取"
-      : `${BODY_GRADE_LABELS[bodyGrade(doc)]} ${doc.wordCount} 字`;
+      : `${BODY_GRADE_LABELS[bodyGrade(doc)]} ${doc.wordCount} 字${dupeNote}`;
     /*
       拿不到发布日期就留空，**不填抓取日期**。
 

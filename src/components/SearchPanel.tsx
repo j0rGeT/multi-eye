@@ -335,6 +335,8 @@ function ResultList({
   timeFilter: { dropped: number; unknown: number } | null;
 }) {
   const docByUrl = new Map(documents.map((d) => [d.url, d]));
+  // 把 duplicateOf 的 id 还原成标题，用于「与《X》同源」的提示
+  const docById = new Map(documents.map((d) => [d.id, d]));
   const [groupBy, setGroupBy] = useState<GroupBy>("site");
 
   // 融合后的 results 是全局排序的，但用户的心智模型是分桶的，
@@ -467,7 +469,38 @@ function ResultList({
                           · {signalSummary(r.signals)}
                         </span>
                       )}
-                      {r.hitCount > 1 && <span>· {r.hitCount} 个来源命中</span>}
+                      {/*
+                        「来源」= 不同的检索入口，**不是**不同的独立出处。
+                        转载会被折叠（见报告里的同源转载一栏），所以这个数字
+                        本身不构成可信度证据 —— 悬浮里把话说全。
+                      */}
+                      {r.hitCount > 1 && (
+                        <span
+                          title={
+                            `命中的检索入口：${(r.sources ?? []).map(providerLabel).join("、")}\n\n` +
+                            "这是「有几个入口指向这里」，不是「有几个独立来源证实了它」：\n" +
+                            "同一个病毒式假消息也会被很多入口提到，\n" +
+                            "而多家转载同一篇稿子仍然只是一个信息源。"
+                          }
+                        >
+                          · {r.hitCount} 个来源命中
+                        </span>
+                      )}
+                      {/*
+                        同源转载标记。只提示、不隐藏 —— 链接照样能点，
+                        但读者知道这一篇不算独立出处。
+                      */}
+                      {doc?.duplicateOf && (
+                        <span
+                          style={{ color: "var(--warn, #d29922)" }}
+                          title={
+                            `与《${docById.get(doc.duplicateOf)?.title ?? "另一篇"}》正文高度相似，` +
+                            "判定为同源转载。\n统计独立出处时两篇只算一个。"
+                          }
+                        >
+                          · 同源转载
+                        </span>
+                      )}
                       {doc && <BodyBadge doc={doc} />}
                     </div>
                   </a>
