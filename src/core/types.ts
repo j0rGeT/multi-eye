@@ -21,6 +21,28 @@ export type ProviderId = "serper" | "searxng" | "ytdlp" | "bilibili";
 
 // ─────────────────────────── 搜索层 ───────────────────────────
 
+/**
+ * 时效筛选窗口。
+ *
+ * 注意它同时作用在两处，缺一不可：一是作为 `time_range` 参数交给上游引擎
+ * （部分引擎认，bing 这类不认），二是拿到结果后**在本地按 publishedAt 兜底过滤**。
+ * 只做前者会出现「勾了一周内，结果里却混着三年前的资料」这种静默失效。
+ */
+export type TimeRange = "day" | "week" | "month" | "year";
+
+/**
+ * 搜索结果的融合排序方式。
+ *
+ * `relevant` 是默认，也是这套系统一直以来的行为：多源印证优先，其次按上游排名。
+ * 其余三种是用户在界面上显式选择的 —— **不静默改变默认排序**，
+ * 因为「多源印证优先」是这套系统的核心主张，换掉它得由用户自己决定。
+ *
+ * `quality` 排的是**客观指标**（star 数、播放量、评论数），不是「可信度」。
+ * 一个高 star 的仓库仍然是「被很多人 star 了」，不是「内容正确」——
+ * 这两件事不能混。详见 `ResultSignal` 的注释。
+ */
+export type SortMode = "relevant" | "recent" | "mixed" | "quality";
+
 export interface SearchQuery {
   text: string;
   site?: SiteKey;
@@ -28,6 +50,38 @@ export interface SearchQuery {
   domain?: string;
   limit?: number;
   language?: string;
+  /** 时效窗口。provider 应尽量透传给上游（有的认有的不认），本地兜底由调用方做。 */
+  timeRange?: TimeRange;
+  /**
+   * 用户选定的排序方式。provider 可以拿它去**换一个更合适的上游排序参数**
+   * （`sortMode: "recent"` 时让 B站按发布时间检索，比事后在本地筛更可靠）。
+   *
+   * 但它**不能**拿它来改变自己返回什么：融合排序由 `rankResults` 统一做，
+   * provider 只负责把最好的那批结果拿回来。
+   */
+  sortMode?: SortMode;
+}
+
+/**
+ * 一条结果自带的客观量化信号 —— 播放量、star 数、评论数这类**上游本来就给了的事实**。
+ *
+ * 刻意做成「标签 + 数值」的开放列表，而不是一组固定字段：每个源能给的指标
+ * 完全不同（GitHub 有 star 没有播放量，视频站反过来），硬塞进统一字段的结果
+ * 是大部分源留空、UI 里一排 `undefined`。
+ *
+ * 更刻意的是：**绝不把这些合成一个「质量分」**。把「12k star」和「45 条评论」
+ * 加权成一个 0~100 的数字，看起来精确，其实权重是拍脑袋定的、且不同源之间
+ * 根本没有可比性。摆出原始数字、让用户自己判断，是这个项目一贯的做法。
+ */
+export interface ResultSignal {
+  /** 展示标签，如 "播放" / "star" / "评论"。 */
+  label: string;
+  value: number;
+  /**
+   * 数值怎么读。`count` 走 1.2k / 3.4万 的紧凑写法，`duration` 当秒数读，
+   * 缺省原样显示（星标数、楼层号这类不该缩写的）。
+   */
+  format?: "count" | "duration";
 }
 
 export interface SearchResult {
@@ -42,12 +96,20 @@ export interface SearchResult {
   provider: ProviderId;
   /** 该 provider 内的原始排名，用于融合排序。 */
   rank: number;
-  /** 多个 provider 都返回了这条结果，值越高越可信。 */
+  /**
+   * 命中这条结果的**去重后** provider 数。
+   *
+   * 注意它不是「可信度」：一个病毒式假消息同样会被很多来源提到。
+   * 它回答的是「有几个独立入口指向这里」，不是「有几个独立来源证实了它」——
+   * 后者还要再排除同源转载（见 `Document.duplicateOf`）。
+   */
   hitCount: number;
   publishedAt?: string;
   author?: string;
   thumbnail?: string;
   durationSec?: number;
+  /** 上游给的客观指标。没有就是 undefined —— 不编造，也不填 0。 */
+  signals?: ResultSignal[];
 }
 
 export interface ProviderCapabilities {
@@ -211,6 +273,16 @@ export interface SessionViewState {
   showDocuments?: boolean;
 }
 
+/**
+ * 这次搜索用的时效选项。落盘是为了让界面刷新后能如实复原当时的口径 ——
+ * 报告里写了「一周内」，那么它会话文件里就得有这一条，否则事后无从解释
+ * 为什么同一主题两次搜出来的资料差那么多。
+ */
+export interface SearchOptions {
+  timeRange?: TimeRange;
+  sortMode?: SortMode;
+}
+
 /** 一次搜索会话的完整快照，落盘为 data/sessions/<id>/session.json。 */
 export interface Session {
   topic: Topic;
@@ -221,6 +293,15 @@ export interface Session {
   providerLog: ProviderLogEntry[];
   /** 图上的位置、锁定与显示开关。刷新页面后据此复原。 */
   viewState?: SessionViewState;
+  /**
+   * 搜索发生的时刻。用于「这次会话已经放了 N 天」的过时提示。
+   *
+   * 可选：这个字段是后加的，磁盘上已有的旧会话没有它。读取方必须回退到
+   * `topic.createdAt`（一直都在），两条路都走不通才认为无从判断。
+   */
+  createdAt?: string;
+  /** 本次搜索的时效口径。旧会话没有，按「未筛未排」处理。 */
+  searchOptions?: SearchOptions;
 }
 
 export interface ProviderLogEntry {
@@ -299,7 +380,17 @@ export type SearchEvent =
   | { type: "plan"; topic: Topic; queries: string[] }
   | { type: "results"; site: SiteKey; results: SearchResult[] }
   | { type: "provider"; log: ProviderLogEntry }
-  | { type: "done"; total: number; sessionId: string }
+  | {
+      type: "done";
+      total: number;
+      sessionId: string;
+      /**
+       * 时效筛选的**副作用**：被剔除的条数，以及因为没写日期而无法判断、
+       * 于是被保留的条数。界面必须把它显示出来 —— 否则用户勾了「一周内」
+       * 却看到一批日期未知的资料，只会以为筛选坏了。
+       */
+      timeFilter: { dropped: number; unknown: number };
+    }
   | { type: "error"; message: string };
 
 /**

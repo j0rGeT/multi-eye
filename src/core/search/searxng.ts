@@ -14,6 +14,7 @@ import type {
   SearchResult,
 } from "@/core/types";
 import { config, checkSearxng } from "@/core/env";
+import { normalizeToIso } from "@/core/dates";
 import { belongsToDomain, buildQuery, resolveSite, siteDomain } from "./sites";
 import { displayDomain, resultId } from "./normalize";
 
@@ -53,8 +54,14 @@ export class SearxngProvider implements SearchProvider {
     url.searchParams.set("language", q.language ?? "zh-CN");
     url.searchParams.set("categories", "general");
     url.searchParams.set("safesearch", "0");
-    // 上游引擎的超时比 fetch 短，避免本地超时后上游还在跑
-    url.searchParams.set("time_range", "");
+    /*
+      SearXNG 的 time_range 取值恰好就是 day/week/month/year，与 TimeRange 同形。
+
+      这里传了不等于过滤一定发生 —— 它只是被转译给上游引擎，而各引擎的支持度
+      差别很大（bing 这类会直接忽略）。所以调用方拿回结果后**必须**再走一遍
+      `filterByTime` 兜底，不能因为「参数已经发出去了」就当筛过了。
+    */
+    url.searchParams.set("time_range", q.timeRange ?? "");
 
     const res = await fetch(url, {
       signal: signal ?? AbortSignal.timeout(config.fetchTimeoutMs),
@@ -101,7 +108,9 @@ export class SearxngProvider implements SearchProvider {
         provider: this.id,
         rank: i + 1,
         hitCount: 1,
-        publishedAt: r.publishedDate ?? undefined,
+        // 各上游引擎给的日期格式不统一（ISO / `Aug 12, 2026` / 时间戳都见过），
+        // 归一化到 ISO 之后下游才敢用它排序和展示
+        publishedAt: normalizeToIso(r.publishedDate),
         thumbnail: r.thumbnail ?? undefined,
       }));
   }

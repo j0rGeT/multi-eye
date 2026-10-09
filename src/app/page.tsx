@@ -23,7 +23,10 @@ import type {
   Session,
   SessionViewState,
   SiteKey,
+  SortMode,
+  TimeRange,
 } from "@/core/types";
+import { formatDate, relativeTime } from "@/core/time";
 import { DEFAULT_SITES } from "@/core/search/sites";
 import { postSse } from "@/components/postSse";
 import SearchPanel from "@/components/SearchPanel";
@@ -34,6 +37,14 @@ import DownloadPanel from "@/components/DownloadPanel";
 export default function Home() {
   const [query, setQuery] = useState("");
   const [sites, setSites] = useState<SiteKey[]>(DEFAULT_SITES);
+  const [timeRange, setTimeRange] = useState<TimeRange | "">("");
+  const [sortMode, setSortMode] = useState<SortMode>("relevant");
+  const [timeFilter, setTimeFilter] = useState<{
+    dropped: number;
+    unknown: number;
+  } | null>(null);
+  /** 当前会话是什么时候搜的。用来判断要不要提示「这批资料可能过时了」。 */
+  const [searchedAt, setSearchedAt] = useState<string | null>(null);
 
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -95,6 +106,11 @@ export default function Home() {
 
         setQuery(session.topic.query);
         setSites(session.topic.sites);
+        // 还原当时的检索口径。旧会话没有这两个字段（那时还没这功能），
+        // 回退到「不限 / 印证优先」，也就是它的结果本来就是按这个口径出的
+        setTimeRange(session.searchOptions?.timeRange ?? "");
+        setSortMode(session.searchOptions?.sortMode ?? "relevant");
+        setSearchedAt(session.createdAt ?? session.topic.createdAt ?? null);
         setResults(session.results);
         setDocuments(session.documents);
         setLogs(session.providerLog);
@@ -157,6 +173,8 @@ export default function Home() {
     setGraph(null);
     setSelected(null);
     setSessionId(null);
+    setTimeFilter(null);
+    setSearchedAt(null);
     // 位置是跟着**那张图**走的，换一轮主题就必须丢掉，
     // 否则新图会沿用上一个主题的坐标（同 id 的节点会被钉在毫不相干的位置）
     setViewState(undefined);
@@ -164,7 +182,13 @@ export default function Home() {
     try {
       await postSse<SearchEvent>(
         "/api/search",
-        { query: query.trim(), sites },
+        {
+          query: query.trim(),
+          sites,
+          // 空串表示不限，服务端不认这个值，这里先归一成 undefined
+          timeRange: timeRange || undefined,
+          sortMode,
+        },
         (e) => {
           switch (e.type) {
             case "results":
@@ -175,6 +199,8 @@ export default function Home() {
               break;
             case "done":
               setSessionId(e.sessionId);
+              setTimeFilter(e.timeFilter);
+              setSearchedAt(new Date().toISOString());
               // 记住这一轮，刷新或重开页面时能接着用
               localStorage.setItem(LAST_SESSION_KEY, e.sessionId);
               break;
@@ -192,7 +218,7 @@ export default function Home() {
     } finally {
       setSearching(false);
     }
-  }, [query, sites, searching]);
+  }, [query, sites, searching, timeRange, sortMode]);
 
   // ── 抓取 ──
   const runFetch = useCallback(async () => {
@@ -369,6 +395,15 @@ export default function Home() {
         )}
       </header>
 
+      <StaleBanner
+        searchedAt={searchedAt}
+        hasResults={results.length > 0}
+        searching={searching}
+        onResearch={runSearch}
+        onRefetch={runFetch}
+        fetching={fetching}
+      />
+
       <main className="main">
         {/*
           三栏工作区。列宽算成 --cols 交给 CSS，因为要支持左右栏折叠 ——
@@ -395,6 +430,11 @@ export default function Home() {
               query={query}
               onQueryChange={setQuery}
               sites={sites}
+              timeRange={timeRange}
+              onTimeRangeChange={setTimeRange}
+              sortMode={sortMode}
+              onSortModeChange={setSortMode}
+              timeFilter={timeFilter}
               onToggleSite={toggleSite}
               onSearch={runSearch}
               searching={searching}
@@ -527,6 +567,71 @@ function mergeResults(
 
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** 会话放多久算「可能过时」。7 天：再久，搜索结果里的链接和内容都会开始失效。 */
+const STALE_AFTER_MS = 7 * 86_400_000;
+
+/**
+ * 陈旧会话提示。
+ *
+ * ── 为什么必须有这个 ──
+ *
+ * 这个应用会自动接回上一次的会话（刷新页面、第二天重开浏览器都是），
+ * 而会话里存的是**当时**的搜索结果和正文。用户看到的界面和刚搜完一模一样，
+ * 完全没有迹象表明这批资料可能已经过时 —— 他会以为自己看到的是最新的。
+ *
+ * ── 为什么给两个按钮 ──
+ *
+ * 「重新搜索」和「重新抓取」是两件不同的事：前者重跑搜索层（可能发现新资料，
+ * 但也可能因为上游波动而变少），后者只是把已有链接的正文重抓一遍（内容可能
+ * 被更新或删除）。合成一个按钮等于替用户决定要哪种，而这两种代价和结果都不同。
+ */
+function StaleBanner({
+  searchedAt,
+  hasResults,
+  searching,
+  onResearch,
+  onRefetch,
+  fetching,
+}: {
+  searchedAt: string | null;
+  hasResults: boolean;
+  searching: boolean;
+  onResearch: () => void;
+  onRefetch: () => void;
+  fetching: boolean;
+}) {
+  if (!searchedAt || !hasResults) return null;
+
+  const t = Date.parse(searchedAt);
+  if (Number.isNaN(t) || Date.now() - t < STALE_AFTER_MS) return null;
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        flexWrap: "wrap",
+        padding: "8px 16px",
+        background: "#3d2c0a",
+        borderBottom: "1px solid #6b4e12",
+        fontSize: 12,
+      }}
+    >
+      <span style={{ color: "#e3b341" }}>
+        本次会话搜索于 {relativeTime(searchedAt)}（{formatDate(searchedAt)}），
+        资料可能已经过时。
+      </span>
+      <button className="btn" onClick={onResearch} disabled={searching || fetching}>
+        重新搜索
+      </button>
+      <button className="btn" onClick={onRefetch} disabled={searching || fetching}>
+        重新抓取正文
+      </button>
+    </div>
+  );
 }
 
 /** 上次用的会话 id。见挂载时那段恢复逻辑。 */

@@ -20,8 +20,11 @@ import type {
   SearchProvider,
   SearchQuery,
   SearchResult,
+  SortMode,
 } from "@/core/types";
 import { displayDomain, resultId } from "./normalize";
+import { normalizeToIso } from "@/core/dates";
+import { compactSignals } from "@/core/signals";
 
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
@@ -71,6 +74,7 @@ export class BilibiliProvider implements SearchProvider {
     url.searchParams.set("search_type", "video");
     url.searchParams.set("keyword", q.text);
     url.searchParams.set("page", "1");
+    url.searchParams.set("order", bilibiliOrder(q.sortMode));
 
     const res = await fetch(url, {
       signal: signal ?? AbortSignal.timeout(15_000),
@@ -112,16 +116,54 @@ export class BilibiliProvider implements SearchProvider {
           provider: this.id,
           rank: i + 1,
           hitCount: 1,
-          publishedAt: it.pubdate
-            ? new Date(it.pubdate * 1000).toISOString()
-            : undefined,
+          publishedAt: normalizeToIso(it.pubdate),
           author: it.author,
           // pic 是协议相对的（//i1.hdslb.com/...），不补协议浏览器不认
           thumbnail: it.pic ? (it.pic.startsWith("//") ? `https:${it.pic}` : it.pic) : undefined,
           durationSec: parseDuration(it.duration),
+          /*
+            B 站接口同时给了播放/弹幕/点赞 —— 这是这套系统里唯一不花额外
+            请求就能拿到的社区声量信号（搜索接口一次性返回）。丢掉它们
+            等于白白放弃一个筛选长尾的维度。
+            注意弹幕和点赞不是一回事：点赞是「看完觉得好」，弹幕是「看的时候
+            有话要说」，所以两个都留着，不合成。
+          */
+          signals: compactSignals([
+            { label: "播放", value: it.play, format: "count" },
+            { label: "弹幕", value: it.danmaku, format: "count" },
+            { label: "点赞", value: it.like, format: "count" },
+          ]),
         };
       });
   }
+}
+
+/**
+ * B 站检索的排序参数。
+ *
+ * ── 为什么默认不是 totalrank（综合排序）──
+ *
+ * 接口的默认值是 `totalrank`，也是网页版看到的「综合排序」。但对**未签名**
+ * 的请求（我们没有 WBI 签名，见文件头对合规边界的说明），它返回的是一批
+ * 几乎没人看过的新投稿 —— 实测三个关键词各取前 20 条：
+ *
+ *   | 关键词   | 默认/totalrank 播放中位 | order=click 播放中位 |
+ *   |---|---|---|
+ *   | 露营装备 |                     6 |       1,988,286 |
+ *   | React 教程 |                6,929 |         378,497 |
+ *   | 咖啡     |               16,792 |       7,708,346 |
+ *
+ * 差 50~500 倍。也就是说默认排序下，B 站这条线贡献的基本是长尾噪音，
+ * 而它的数量（每轮 20 条）足以把整个结果集的质量拉低。
+ *
+ * `click` 是按播放量排，实测结果仍然切题（「露营装备」返回的是露营引火物
+ * 这类高播放的相关视频），所以拿它当默认。
+ *
+ * 用户选了「最新优先」时改用 `pubdate`：那时他要的就是最新，让上游直接
+ * 按时间检索，比先取一批热门再在本地筛掉更可靠。
+ */
+function bilibiliOrder(mode?: SortMode): string {
+  return mode === "recent" ? "pubdate" : "click";
 }
 
 /**

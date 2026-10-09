@@ -108,6 +108,30 @@ function bytes(n) {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
+/**
+ * 按站点轮流取前 `limit` 条，保持每组内部的原有顺序。
+ *
+ * 输入已经是融合排序过的列表，所以每组的组内顺序就是「该站点里最该抓的」；
+ * 这里只改**组间**的交错方式。结果数量不足时自然截断，不需要补齐。
+ */
+function interleaveBySite(results, limit) {
+  const groups = new Map();
+  for (const r of results) {
+    const list = groups.get(r.site);
+    if (list) list.push(r);
+    else groups.set(r.site, [r]);
+  }
+
+  const queues = [...groups.values()];
+  const out = [];
+  for (let i = 0; out.length < limit && i < results.length; i += 1) {
+    for (const q of queues) {
+      if (i < q.length && out.length < limit) out.push(q[i]);
+    }
+  }
+  return out;
+}
+
 /** 计时包装：返回 [结果, 毫秒]。 */
 async function timed(fn) {
   const t = Date.now();
@@ -281,7 +305,19 @@ try {
   // ── 2. 抓取 ────────────────────────────────────────────────
   step("2. 抓取正文（SSE 逐篇）");
 
-  const targets = results_.slice(0, FETCH_LIMIT).map((r) => r.id);
+  /*
+    取前 N 条时必须**按站点轮流取**，不能直接 slice。
+
+    直接 slice 的后果实测过：融合列表按（印证数 → 源内排名）排，而源内排名
+    跨来源大量撞号，于是前 12 条很容易被同一个站点整段吃掉 —— 表现就是
+    「12 条里 11 条是 B站视频」，而 B站视频天然没有正文（标题 + 标签 + 一句
+    简介），抓取阶段于是全军覆没、构图 409、脚本中断。
+
+    轮流取保证每个站点都拿到配额，抓取阶段因此总有几条真正有正文的资料。
+    这不只是让测试稳定 —— 它模拟的正是真实用法：用户看的是一份**混合**语料，
+    而不是某一个源的回音壁。
+  */
+  const targets = interleaveBySite(results_, FETCH_LIMIT).map((r) => r.id);
   documents = [];
 
   const [, fetchMs] = await timed(() =>

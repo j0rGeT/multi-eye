@@ -8,6 +8,7 @@
  */
 
 import type { Cluster, Document, GraphModel, GraphNode } from "@/core/types";
+import { formatDate } from "@/core/time";
 
 export interface NodeDetailProps {
   node: GraphNode | null;
@@ -130,6 +131,11 @@ export default function NodeDetail({
               </div>
               <div className="dim" style={{ fontSize: 11 }}>
                 {doc.site} · {doc.wordCount} 字 · {methodLabel(doc.extractMethod)}
+                {/*
+                  发布于 ≠ 抓取于，分开放。没有发布日期时这一整段都不出现 ——
+                  拿 fetchedAt 顶上会让人以为一篇旧文是刚发的。
+                */}
+                {doc.publishedAt && ` · 发布于 ${formatDate(doc.publishedAt)}`}
               </div>
             </button>
           ))}

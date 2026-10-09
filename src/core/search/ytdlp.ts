@@ -16,6 +16,8 @@ import type {
 } from "@/core/types";
 import { config, hasYtdlp, ytdlpCommonArgs } from "@/core/env";
 import { resultId } from "./normalize";
+import { normalizeToIso } from "@/core/dates";
+import { compactSignals } from "@/core/signals";
 
 const execFileAsync = promisify(execFile);
 
@@ -94,21 +96,25 @@ export class YtDlpProvider implements SearchProvider {
           rank: i + 1,
           hitCount: 1,
           author: e.channel ?? e.uploader,
-          publishedAt: parseYtdlpDate(e.upload_date),
+          /*
+            `--flat-playlist` 下 `upload_date` 恒为 null —— 实测过，YouTube 的
+            搜索结果 JSON 里根本没有这个字段，`timestamp` / `release_timestamp`
+            也同样是 null。想在这里拿到日期，唯一的办法是去掉 `--flat-playlist`
+            让 yt-dlp 逐个视频做完整抽取，10 个视频要跑几分钟。
+
+            所以搜索阶段这里老实返回 undefined，日期留给抓取阶段补
+            （`fetch/youtube.ts` 那时本来就要对单个视频跑一次 yt-dlp，
+            顺手带上 `--write-info-json` 即可，零额外请求）。
+          */
+          publishedAt: normalizeToIso(e.upload_date),
           thumbnail:
             e.thumbnails?.at(-1)?.url ?? `https://i.ytimg.com/vi/${e.id}/mqdefault.jpg`,
           durationSec: e.duration ?? undefined,
+          // 播放量在 flat 模式下是可用的，而它正是判断一个视频值不值得看的主要依据
+          signals: compactSignals([
+            { label: "播放", value: e.view_count, format: "count" },
+          ]),
         };
       });
   }
-}
-
-/** yt-dlp 的 upload_date 是 YYYYMMDD 紧凑格式。 */
-function parseYtdlpDate(raw?: string | null): string | undefined {
-  if (!raw || raw.length !== 8) return undefined;
-  const y = raw.slice(0, 4);
-  const m = raw.slice(4, 6);
-  const d = raw.slice(6, 8);
-  const date = new Date(`${y}-${m}-${d}T00:00:00Z`);
-  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }

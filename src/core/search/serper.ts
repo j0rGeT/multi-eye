@@ -12,6 +12,7 @@ import type {
   SearchResult,
 } from "@/core/types";
 import { config, hasSerper } from "@/core/env";
+import { normalizeToIso } from "@/core/dates";
 import { buildQuery, resolveSite } from "./sites";
 import { displayDomain, resultId } from "./normalize";
 
@@ -87,32 +88,10 @@ export class SerperProvider implements SearchProvider {
         provider: this.id,
         rank: r.position ?? i + 1,
         hitCount: 1,
-        // Serper 的 date 是自然语言（"3 天前"），只在能解析成日期时才带上
-        publishedAt: parseLooseDate(r.date),
+        // Serper 的 date 是自然语言（「3 天前」），归一化只在能解析出结果时才带上
+        publishedAt: normalizeToIso(r.date),
         thumbnail: r.imageUrl,
       }));
   }
 }
 
-/** Serper 返回的日期可能是绝对日期也可能是相对描述，尽力而为。 */
-function parseLooseDate(raw?: string): string | undefined {
-  if (!raw) return undefined;
-  const direct = new Date(raw);
-  if (!Number.isNaN(direct.getTime())) return direct.toISOString();
-
-  const m = raw.match(/(\d+)\s*(天|小时|分钟|周|个月|年)前/);
-  if (m) {
-    const n = Number(m[1]);
-    const unitMs: Record<string, number> = {
-      分钟: 60_000,
-      小时: 3_600_000,
-      天: 86_400_000,
-      周: 604_800_000,
-      个月: 2_592_000_000,
-      年: 31_536_000_000,
-    };
-    const ms = unitMs[m[2]];
-    if (ms) return new Date(Date.now() - n * ms).toISOString();
-  }
-  return undefined;
-}

@@ -8,10 +8,35 @@
  * 直接摊开，比让用户去猜有用得多。
  */
 
-import type { ProviderLogEntry, SearchResult, SiteKey } from "@/core/types";
+import type {
+  ProviderLogEntry,
+  ResultSignal,
+  SearchResult,
+  SiteKey,
+  SortMode,
+  TimeRange,
+} from "@/core/types";
 import { SITE_ORDER, siteShortLabel } from "@/core/search/sites";
+import {
+  SORT_LABELS,
+  TIME_RANGE_LABELS,
+  TIME_RANGE_ORDER,
+} from "@/core/search/filter";
+import { formatDate, relativeTime } from "@/core/time";
+import { BODY_GRADE_LABELS, bodyGrade } from "@/core/quality";
+import { formatSignalValue, signalSummary } from "@/core/signals";
 import { methodLabel } from "./NodeDetail";
 import type { Document } from "@/core/types";
+
+/** 排序模式的一句话解释 —— 挂在下拉框的 title 上。 */
+const SORT_HELP: Record<SortMode, string> = {
+  relevant:
+    "默认。被多个独立来源提到的资料排在前面，其次按上游排名。这是「多源印证优先」的核心主张。",
+  recent: "按发布日期降序。没有发布日期的排在最后 —— 我们不知道它有多新，插在中间就是编造秩序。",
+  mixed: "印证数与新鲜度各占一部分权重，30 天半衰期。",
+  quality:
+    "按来源自带的客观指标（star / 播放 / 评论）排，没有任何指标的一律排最后。\n注意：它排的是「公开声量」，不是「内容是否正确」。一个 20k star 的仓库仍然可能有坑，一条百万播放的视频仍然可能是错的。",
+};
 
 export interface SearchPanelProps {
   query: string;
@@ -20,6 +45,14 @@ export interface SearchPanelProps {
   onToggleSite: (s: SiteKey) => void;
   onSearch: () => void;
   searching: boolean;
+
+  /** 时效窗口。空串表示不限。 */
+  timeRange: TimeRange | "";
+  onTimeRangeChange: (r: TimeRange | "") => void;
+  sortMode: SortMode;
+  onSortModeChange: (m: SortMode) => void;
+  /** 上一次搜索的时效过滤副作用。null 表示还没搜过。 */
+  timeFilter: { dropped: number; unknown: number } | null;
 
   results: SearchResult[];
   logs: ProviderLogEntry[];
@@ -40,6 +73,7 @@ export interface SearchPanelProps {
 export default function SearchPanel(props: SearchPanelProps) {
   const {
     query, onQueryChange, sites, onToggleSite, onSearch, searching,
+    timeRange, onTimeRangeChange, sortMode, onSortModeChange, timeFilter,
     results, logs, siteCounts,
     documents, onFetch, fetching, fetchProgress,
     onBuildGraph, building, graphError, hasGraph,
@@ -94,6 +128,58 @@ export default function SearchPanel(props: SearchPanelProps) {
               </button>
             );
           })}
+        </div>
+
+        {/*
+          时效与排序。放在搜索条件里而不是结果之上，是因为它们是**下一次搜索
+          的输入**，不是对已有结果的视图操作 —— 勾完要点「搜索」才生效。
+        */}
+        <div
+          style={{
+            display: "flex",
+            gap: 10,
+            marginTop: 12,
+            alignItems: "center",
+            flexWrap: "wrap",
+            fontSize: 12,
+          }}
+        >
+          <label className="dim" style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            时效
+            <select
+              className="input"
+              style={{ padding: "3px 6px", fontSize: 12, width: "auto" }}
+              value={timeRange}
+              onChange={(e) => onTimeRangeChange(e.target.value as TimeRange | "")}
+              disabled={searching}
+              title="只保留该时间窗口内发布的资料。没有发布日期的结果会被保留并标注。"
+            >
+              <option value="">不限</option>
+              {TIME_RANGE_ORDER.map((r) => (
+                <option key={r} value={r}>
+                  {TIME_RANGE_LABELS[r]}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="dim" style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            排序
+            <select
+              className="input"
+              style={{ padding: "3px 6px", fontSize: 12, width: "auto" }}
+              value={sortMode}
+              onChange={(e) => onSortModeChange(e.target.value as SortMode)}
+              disabled={searching}
+              title={SORT_HELP[sortMode]}
+            >
+              {(Object.keys(SORT_LABELS) as SortMode[]).map((m) => (
+                <option key={m} value={m}>
+                  {SORT_LABELS[m]}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
       </div>
 
@@ -211,7 +297,11 @@ export default function SearchPanel(props: SearchPanelProps) {
 
       {/* ── 结果列表 ── */}
       {results.length > 0 && (
-        <ResultList results={results} documents={documents} />
+        <ResultList
+          results={results}
+          documents={documents}
+          timeFilter={timeFilter}
+        />
       )}
     </div>
   );
@@ -220,9 +310,11 @@ export default function SearchPanel(props: SearchPanelProps) {
 function ResultList({
   results,
   documents,
+  timeFilter,
 }: {
   results: SearchResult[];
   documents: Document[];
+  timeFilter: { dropped: number; unknown: number } | null;
 }) {
   const docByUrl = new Map(documents.map((d) => [d.url, d]));
 
@@ -242,6 +334,20 @@ function ResultList({
   return (
     <div className="panel" style={{ padding: 14 }}>
       <h2>搜索结果 · {results.length} 条</h2>
+
+      {/*
+        时效筛选的副作用必须说出来。用户勾了「一周内」却看到一批资料，
+        如果没有这行提示，他无从知道其中多少条是**因为没写日期而无法判断**、
+        于是被保留下来的 —— 那样「一周内」看起来像一条没生效的筛选。
+      */}
+      {timeFilter && (timeFilter.dropped > 0 || timeFilter.unknown > 0) && (
+        <p className="dim" style={{ fontSize: 11, margin: "0 0 10px" }}>
+          {timeFilter.dropped > 0 && `已按时间窗口筛掉 ${timeFilter.dropped} 条。`}
+          {timeFilter.unknown > 0 &&
+            `另 ${timeFilter.unknown} 条没有发布日期、无从判断新旧，已保留并标为「日期未知」。`}
+        </p>
+      )}
+
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         {ordered.map(([site, items]) => (
           <div key={site}>
@@ -283,15 +389,32 @@ function ResultList({
                       }}
                     >
                       <span>{r.domain}</span>
+                      {/*
+                        有发布日期才显示时间，没有就什么都不显示。
+
+                        这里**绝不**回退到 fetchedAt（「抓取于…」）—— 那是
+                        「我们什么时候去看的」，不是「这篇文章什么时候写的」。
+                        拿它顶替发布时间，用户会把一篇 2019 年的文章当成今天发的。
+                      */}
+                      {r.publishedAt && (
+                        <span title={`发布于 ${formatDate(r.publishedAt)}`}>
+                          · {relativeTime(r.publishedAt)}发布
+                        </span>
+                      )}
                       {r.durationSec !== undefined && (
                         <span>· {fmtDuration(r.durationSec)}</span>
                       )}
-                      {r.hitCount > 1 && <span>· {r.hitCount} 个来源命中</span>}
-                      {doc && (
-                        <span style={{ color: "var(--ok)" }}>
-                          · 已抓取 {doc.wordCount} 字（{methodLabel(doc.extractMethod)}）
+                      {/*
+                        上游给的客观指标原样摆出来。它们不是「质量分」——
+                        只是「播放 12.3万 · 弹幕 456」这样的事实，判断留给用户。
+                      */}
+                      {r.signals && r.signals.length > 0 && (
+                        <span title={signalTitle(r.signals)}>
+                          · {signalSummary(r.signals)}
                         </span>
                       )}
+                      {r.hitCount > 1 && <span>· {r.hitCount} 个来源命中</span>}
+                      {doc && <BodyBadge doc={doc} />}
                     </div>
                   </a>
                 );
@@ -308,4 +431,41 @@ function fmtDuration(sec: number): string {
   const m = Math.floor(sec / 60);
   const s = sec % 60;
   return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+/** 声量指标的悬浮解释 —— 点名它**不是**可信度。 */
+function signalTitle(signals: ResultSignal[]): string {
+  return [
+    signals.map((s) => `${s.label} ${formatSignalValue(s)}`).join("\n"),
+    "",
+    "这是来源给出的客观计数，不是内容可信度：",
+    "高播放/高 star 只说明很多人在看，不说明它是对的。",
+  ].join("\n");
+}
+
+/**
+ * 抓取结果的正文分级标记。
+ *
+ * 三档用颜色区分是有意的：`full` 是常态，不必强调；而 `snippet` 意味着
+ * **这条根本没有正文**，只有搜索摘要 —— 拿它进语料，拓扑会退化成一张按
+ * 标题匹配的假图（启发式构图按正文长度给文档权重，摘要长度全在同一个
+ * 量级，权重也就全被拉平）。所以这件事必须在结果列表里就能一眼看出来。
+ */
+function BodyBadge({ doc }: { doc: Document }) {
+  const grade = bodyGrade(doc);
+  const color =
+    grade === "full" ? "var(--ok)" : grade === "thin" ? "var(--warn)" : "var(--err)";
+
+  const title =
+    grade === "snippet"
+      ? `没有抓到正文，正文退化为搜索摘要。${doc.error ? `原因：${doc.error}` : ""}`
+      : grade === "thin"
+        ? `${doc.wordCount} 字。可能是短视频/短贴，也可能抓成了导航栏 —— 点开看一眼。`
+        : `${doc.wordCount} 字正文。`;
+
+  return (
+    <span style={{ color }} title={title}>
+      · {BODY_GRADE_LABELS[grade]} {doc.wordCount} 字（{methodLabel(doc.extractMethod)}）
+    </span>
+  );
 }

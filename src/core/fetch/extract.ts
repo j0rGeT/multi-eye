@@ -67,6 +67,12 @@ export async function extractOne(
         text: tr.text,
         markdown: tr.text,
         title: result.title,
+        /*
+          搜索层拿不到 YouTube 的发布日期（yt-dlp 搜索用的是 `--flat-playlist`，
+          那模式下 upload_date 是 null），所以这里必须把抓取层补到的日期传下去。
+          `buildDoc` 自身不会去猜 —— 传 undefined 就是没有。
+        */
+        publishedAt: tr.publishedAt ?? result.publishedAt,
         startedAt: t0,
       });
     }
@@ -80,7 +86,11 @@ export async function extractOne(
      * 内容，又会以极高权重污染后续的 TF-IDF，比抓不到还糟。
      * 视频的唯一正文本就是字幕，没有字幕就没有正文，退回摘要才是诚实的。
      */
-    return fallbackDocument(result, tr.error ?? "该视频没有可用字幕", t0);
+    // 兜底文档也带上日期：没有字幕不代表不知道这个视频什么时候发的，
+    // 而「发布日期」正是判断一条资料该不该采信时效性的前提
+    return fallbackDocument(result, tr.error ?? "该视频没有可用字幕", t0, {
+      publishedAt: tr.publishedAt ?? result.publishedAt,
+    });
   }
 
   // ── 二级：B站视频接口 ──
@@ -112,7 +122,9 @@ export async function extractOne(
      * 推荐列表（导航 + 别人的视频标题），一千多字里没有一个是这个视频的内容。
      * 抓不到正文时退回搜索摘要，比拿一段别的东西冒充正文诚实得多。
      */
-    return fallbackDocument(result, bv.error ?? "B站接口未返回可用内容", t0);
+    return fallbackDocument(result, bv.error ?? "B站接口未返回可用内容", t0, {
+      publishedAt: bv.publishedAt ?? result.publishedAt,
+    });
   }
 
   // ── 三级：HTTP + Readability ──
@@ -166,6 +178,14 @@ export async function extractOne(
             markdown: br.selectorText,
             title: extraction.title || result.title,
             images: extraction.images,
+            /*
+              别把第一次 HTTP 那趟已经读到的日期丢掉。
+
+              这一支换的是正文来源（静态 HTML → 无头浏览器渲染结果），
+              和日期没有关系；`extraction` 是从静态 HTML 解析出来的，
+              它的 publishedAt 与这次替换无关，仍然有效。
+            */
+            publishedAt: extraction.publishedAt ?? result.publishedAt,
             lang: extraction.lang,
             startedAt: t0,
           });
@@ -195,6 +215,8 @@ export async function extractOne(
         markdown: extraction.markdown,
         title: extraction.title || result.title,
         images: extraction.images,
+        // 同上：降级的是正文，不是日期
+        publishedAt: extraction.publishedAt ?? result.publishedAt,
         lang: extraction.lang,
         startedAt: t0,
         error: "正文提取不完整（疑似动态渲染，需启用 Playwright）",
@@ -261,12 +283,14 @@ function fallbackDocument(
   r: SearchResult,
   error: string,
   startedAt = Date.now(),
+  extra: { publishedAt?: string } = {},
 ): Document {
   return buildDoc(r, {
     method: "raw",
     text: r.snippet,
     markdown: r.snippet,
     title: r.title,
+    publishedAt: extra.publishedAt,
     startedAt,
     error,
   });

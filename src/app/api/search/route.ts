@@ -1,6 +1,14 @@
 import type { NextRequest } from "next/server";
-import type { SearchEvent, SiteKey, Session, Topic } from "@/core/types";
+import type {
+  SearchEvent,
+  SiteKey,
+  SortMode,
+  Session,
+  TimeRange,
+  Topic,
+} from "@/core/types";
 import { searchAll } from "@/core/search/orchestrate";
+import { TIME_RANGE_MS } from "@/core/search/filter";
 import { buildQuery, DEFAULT_SITES, SITE_TARGETS } from "@/core/search/sites";
 import { newTopicId, saveSession } from "@/core/store";
 import { sseResponse } from "@/core/sse";
@@ -13,6 +21,26 @@ interface SearchBody {
   query?: string;
   sites?: SiteKey[];
   domain?: string;
+  timeRange?: string;
+  sortMode?: string;
+}
+
+const SORT_MODES: SortMode[] = ["relevant", "recent", "mixed", "quality"];
+
+/**
+ * 校验请求里来的枚举值。
+ *
+ * 这两个字段会从 URL/表单直接进来，任何字符串都可能，而它们会一路影响到
+ * 排序与过滤。校验过之后下游就可以当它们是可信的联合类型用；不校验则要么
+ * 在每处使用点重复判断，要么让 `sortMode: "RECENT"` 这类值悄悄退化成默认
+ * 行为 —— 用户以为切换了排序，其实没有。
+ */
+function pickTimeRange(v: string | undefined): TimeRange | undefined {
+  return v && v in TIME_RANGE_MS ? (v as TimeRange) : undefined;
+}
+
+function pickSortMode(v: string | undefined): SortMode {
+  return SORT_MODES.includes(v as SortMode) ? (v as SortMode) : "relevant";
 }
 
 /**
@@ -38,6 +66,8 @@ export async function POST(req: NextRequest) {
   const sites = (body.sites?.length ? body.sites : DEFAULT_SITES).filter(
     (s): s is SiteKey => s in SITE_TARGETS,
   );
+  const timeRange = pickTimeRange(body.timeRange);
+  const sortMode = pickSortMode(body.sortMode);
 
   const topic: Topic = {
     id: newTopicId(),
@@ -54,10 +84,12 @@ export async function POST(req: NextRequest) {
       queries: sites.map((s) => buildQuery(query, s, body.domain)),
     });
 
-    const { results, log } = await searchAll({
+    const { results, log, timeFilter } = await searchAll({
       topic: query,
       sites,
       signal: req.signal,
+      timeRange,
+      sortMode,
       onSiteDone: (site, siteResults, entry) => {
         emit({ type: "results", site, results: siteResults });
         emit({ type: "provider", log: entry });
@@ -71,9 +103,20 @@ export async function POST(req: NextRequest) {
       results,
       documents: [],
       providerLog: log,
+      createdAt: new Date().toISOString(),
+      // 把当时的口径一起存下来，否则事后没法解释「为什么这次搜出来的资料
+      // 比上次少一大截」—— 可能只是当时勾了「一周内」
+      searchOptions: { timeRange, sortMode },
     };
     await saveSession(session);
 
-    emit({ type: "done", total: results.length, sessionId: topic.id });
+    emit({
+      type: "done",
+      total: results.length,
+      sessionId: topic.id,
+      // 筛选口径和它的副作用一起回传，界面才可以如实说明「筛掉了 N 条、
+      // 另有 M 条因为没写日期而无法判断」
+      timeFilter,
+    });
   }, req.signal);
 }

@@ -15,6 +15,10 @@
 
 import type { Document, GraphModel, SearchResult, Session } from "@/core/types";
 import { siteLabel } from "@/core/search/sites";
+import { SORT_LABELS, TIME_RANGE_LABELS } from "@/core/search/filter";
+import { dateCoverage, dateSpan, formatDate, formatDateTime, formatSpan } from "@/core/time";
+import { BODY_GRADE_LABELS, bodyGrade, qualitySummary } from "@/core/quality";
+import { signalSummary } from "@/core/signals";
 import { clusterColor, clusterIndexMap } from "@/core/graph/palette";
 
 export interface MarkdownOptions {
@@ -51,6 +55,7 @@ export function renderMarkdownReport(
   const out: string[] = [];
 
   const withContent = documents.filter((d) => d.extractMethod !== "raw").length;
+  const asOf = dataAsOf(documents);
 
   out.push(frontmatter(session, now));
   out.push(`# ${topic.query} · 主题资料报告`);
@@ -58,8 +63,9 @@ export function renderMarkdownReport(
   // 只写「抓取 71 篇」会把 28 篇只有摘要的也算成正文，读者据此判断
   // 资料完整度就会出错。
   out.push(
-    `> 生成于 ${formatDateTime(now)}，检索 ${results.length} 条结果，` +
-      `${withContent} 篇拿到正文，${graphedDocIds.size} 篇参与构图。`,
+    `> 生成于 ${formatDateTime(now.toISOString())}，检索 ${results.length} 条结果，` +
+      `${withContent} 篇拿到正文，${graphedDocIds.size} 篇参与构图。` +
+      (asOf ? `**数据截至 ${formatDateTime(asOf)}**。` : ""),
   );
 
   // 站点清单放在最前面：读者需要先知道这份报告的搜索范围，
@@ -106,12 +112,55 @@ export function renderMarkdownReport(
  * YAML 双引号标量的子集，所以「用户输入的标题里有冒号或引号」这种最容易
  * 破坏 frontmatter 的情况不需要单独处理。
  */
+/**
+ * 「数据截至」：所有已抓取资料里最晚的一次抓取时刻。
+ *
+ * 刻意用 `fetchedAt` 而**不是** `publishedAt`：这一项要回答的是「这份报告里
+ * 的信息，最晚是什么时候从网上取的」，也就是它的新鲜度上限。用发布日期会
+ * 答成另一个问题（这批资料本身有多新），而且大量资料没有发布日期，
+ * 取最大值会得到一个偏早的、看起来像发布日期答案的错值。
+ *
+ * 发布日期的新鲜度由「发布时间跨度」那一行单独回答。
+ */
+function dataAsOf(documents: readonly Document[]): string | undefined {
+  let newest: string | undefined;
+  let newestMs = -Infinity;
+  for (const d of documents) {
+    const t = Date.parse(d.fetchedAt);
+    if (Number.isNaN(t)) continue;
+    if (t > newestMs) {
+      newestMs = t;
+      newest = d.fetchedAt;
+    }
+  }
+  return newest;
+}
+
 function frontmatter(session: Session, now: Date): string {
   const { topic, results, documents, graph } = session;
+  const coverage = dateCoverage(results);
+  const quality = qualitySummary(documents);
+  const asOf = dataAsOf(documents);
+  const opts = session.searchOptions;
+
   const lines = [
     "---",
     `topic: ${JSON.stringify(topic.query)}`,
     `generated: ${JSON.stringify(now.toISOString())}`,
+    // 搜索发生的时刻，与 generated（报告生成的时刻）是两回事：一份三天前
+    // 搜的会话今天导出，两个时间会差很多，而读者需要知道的是前者
+    `searched: ${JSON.stringify(session.createdAt ?? topic.createdAt)}`,
+    ...(asOf ? [`data_as_of: ${JSON.stringify(asOf)}`] : []),
+    /*
+      日期覆盖率与检索口径都写进 frontmatter，是为了让报告**自己说清楚它的
+      局限**。不写的话，读者没法知道「这份报告里只有 12% 的资料标了日期」，
+      也就没法判断「没有找到新资料」是事实还是数据缺失。
+    */
+    `date_coverage: ${coverage.known}/${coverage.total}`,
+    // 正文可用性同理：机器读这份报告时也该知道「几篇是真有正文的」
+    `body_coverage: ${quality.counts.full + quality.counts.thin}/${quality.total}`,
+    `sort_mode: ${opts?.sortMode ?? "relevant"}`,
+    ...(opts?.timeRange ? [`time_range: ${opts.timeRange}`] : []),
     `sites: [${topic.sites.map((s) => JSON.stringify(s)).join(", ")}]`,
     `results: ${results.length}`,
     `documents: ${documents.length}`,
@@ -131,13 +180,52 @@ function frontmatter(session: Session, now: Date): string {
 
 function overview(session: Session, graphedCount: number): string {
   const { results, documents, graph } = session;
-  const withContent = documents.filter((d) => d.extractMethod !== "raw").length;
+  const quality = qualitySummary(documents);
+
+  const coverage = dateCoverage(results);
+  const span = dateSpan(results.map((r) => r.publishedAt));
+  const opts = session.searchOptions;
 
   const rows: [string, string][] = [
     ["搜索结果", `${results.length} 条`],
-    ["抓取正文", `${withContent} 篇（另 ${documents.length - withContent} 篇仅拿到摘要）`],
+    /*
+      正文分三档而不是「有正文 / 只有摘要」两档。
+
+      中间那档（`thin`）是实测逼出来的：抓取「成功」但正文只有百来字的
+      文档确实存在 —— 抓成了导航栏、抓成了侧栏推荐、或者视频只有一句话
+      简介。二档分类会把它们算进「有正文」，于是一批语料看上去整齐，
+      实际上进 TF-IDF 的全是模板文字。
+    */
+    [
+      "抓取正文",
+      `${quality.counts.full} 篇完整` +
+        (quality.counts.thin > 0 ? ` · ${quality.counts.thin} 篇偏短` : "") +
+        (quality.counts.snippet > 0 ? ` · ${quality.counts.snippet} 篇仅摘要` : ""),
+    ],
     ["参与构图", `${graphedCount} 篇`],
+    /*
+      日期覆盖率与时间跨度摆在概览里，而不是藏在附录。
+
+      它们回答的是同一个问题：「这份报告有多新」。实测纯 SearXNG 会话的
+      覆盖率是 0%（搜索引擎压根不返回发布日期），而用户从报告里看不出来 ——
+      只会以为「这些都是最新资料」。把 `12/68` 这个数摊开，读者自己就能
+      判断该不该据此下结论。
+    */
+    [
+      "日期覆盖率",
+      coverage.total === 0
+        ? "无"
+        : `${coverage.known}/${coverage.total}（${Math.round(coverage.ratio * 100)}%）`,
+    ],
+    ["发布时间跨度", formatSpan(span) || "全部未知"],
   ];
+
+  if (opts?.timeRange) {
+    rows.push(["时效窗口", TIME_RANGE_LABELS[opts.timeRange]]);
+  }
+  if (opts?.sortMode && opts.sortMode !== "relevant") {
+    rows.push(["排序方式", SORT_LABELS[opts.sortMode]]);
+  }
 
   if (graph) {
     rows.push(
@@ -387,11 +475,22 @@ function fullSourceList(
 ): string {
   const docByUrl = new Map(session.documents.map((d) => [d.url, d]));
 
+  const hasSignals = session.results.some((r) => r.signals?.length);
+
   const body = [
     "## 附录 A · 全量来源",
     "",
-    "| # | 标题 | 站点 | 正文 |",
-    "| --- | --- | --- | --- |",
+    // 说明必须放在表**之前** —— 夹在表头和第一行数据之间会打断 Markdown
+    // 表格，后面所有行都会退化成普通段落
+    ...(hasSignals
+      ? [
+          "「声量」一列是来源给出的客观计数（播放/star/评论），**不是可信度**：",
+          "它只说明很多人在看，不说明它是对的。",
+          "",
+        ]
+      : []),
+    hasSignals ? "| # | 标题 | 站点 | 发布 | 正文 | 声量 |" : "| # | 标题 | 站点 | 发布 | 正文 |",
+    hasSignals ? "| --- | --- | --- | --- | --- | --- |" : "| --- | --- | --- | --- | --- |",
   ];
 
   session.results.forEach((r, i) => {
@@ -401,11 +500,21 @@ function fullSourceList(
       : escapeCell(r.title || r.url);
     const content = !doc
       ? "未抓取"
-      : doc.extractMethod === "raw"
-        ? "仅摘要"
-        : `${doc.wordCount} 字`;
+      : `${BODY_GRADE_LABELS[bodyGrade(doc)]} ${doc.wordCount} 字`;
+    /*
+      拿不到发布日期就留空，**不填抓取日期**。
+
+      「抓取日」和「发布日」是两件事：把抓取日填进「发布」列，读者会以为
+      一篇 2019 年的文章是今天发的。宁可空着 —— 空白清楚地表示「不知道」，
+      而错填的日期会被当真。
+    */
+    const published = formatDate(r.publishedAt) || "—";
+    // 没有声量的源（搜索引擎给的网页结果）留白，不填 0 —— 0 是「没人看」，
+    // 空白是「这个源不给这个数」，两件事
+    const signals = hasSignals ? ` | ${escapeCell(signalSummary(r.signals) || "—")}` : "";
+
     body.push(
-      `| ${i + 1} | ${escapeCell(title)} | ${siteLabel(r.site)} | ${content} |`,
+      `| ${i + 1} | ${escapeCell(title)} | ${siteLabel(r.site)} | ${published} | ${content}${signals} |`,
     );
   });
 
@@ -499,7 +608,8 @@ function docHeading(d: Document, includeUrl: boolean): string {
 function docMetaLine(d: Document): string {
   const parts = [siteLabel(d.site)];
   if (d.author) parts.push(d.author);
-  if (d.publishedAt) parts.push(d.publishedAt.slice(0, 10));
+  // 明确写成「发布 X」而不是光秃秃一个日期：读者不会把它误当成抓取时间
+  if (d.publishedAt) parts.push(`发布 ${formatDate(d.publishedAt)}`);
   parts.push(`${d.wordCount} 字`);
   parts.push(methodName(d.extractMethod));
   if (d.error) parts.push(`（${d.error}）`);
@@ -528,13 +638,6 @@ function methodName(m: Document["extractMethod"]): string {
  * 那是空间受限场合的展示名，与报告正文里的正式名是两种用途，不算重复。
  */
 
-function formatDateTime(d: Date): string {
-  const p = (n: number) => String(n).padStart(2, "0");
-  return (
-    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
-    `${p(d.getHours())}:${p(d.getMinutes())}`
-  );
-}
 
 /**
  * 表格单元格转义。

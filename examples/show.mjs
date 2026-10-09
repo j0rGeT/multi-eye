@@ -9,6 +9,7 @@
  *   node examples/show.mjs <sessionId>              # 拓扑
  *   node examples/show.mjs <sessionId> --report     # 导出的 Markdown 前 N 行
  *   node examples/show.mjs <sessionId> --docs       # 逐篇看抓取质量
+ *   node examples/show.mjs <sessionId> --coverage   # 时效覆盖率 + 正文可用性
  *   node examples/show.mjs                          # 列出最近的会话
  */
 
@@ -178,6 +179,160 @@ function showDocs(s) {
   console.log(`\n  ${C.dim(Object.entries(by).map(([k, v]) => `${k}×${v}`).join("  "))}\n`);
 }
 
+/**
+ * 日期覆盖率。
+ *
+ * 这是评估「这批资料有多新」时最先要看的一个数。发布日期缺得越多，
+ * 「最新资料」这种说法就越没有依据 —— 而界面上看不出来，只会觉得
+ * 「这些资料都没写时间」。
+ *
+ * 分两段统计而不是合成一个数：搜索结果的日期来自搜索引擎，已抓取正文的
+ * 日期来自页面自己的元信息（meta / JSON-LD / `<time>`），两条来源完全独立。
+ * 合成一个数就看不出「搜索引擎不给日期，但页面自己写了」这种情况。
+ *
+ * 再按 provider 拆一次，是为了回答「该换哪个源」——实测 searxng 那条路
+ * 基本不返回发布日期，而 bilibili/ytdlp 这两条平台专用通道条条都有。
+ */
+function showCoverage(s) {
+  const results = s.results ?? [];
+  const docs = s.documents ?? [];
+
+  console.log(C.bold(`\n时效覆盖 · 「${s.topic?.query}」`));
+
+  const opts = s.searchOptions ?? {};
+  const searched = s.createdAt ?? s.topic?.createdAt;
+  console.log(
+    C.dim(
+      `  搜索于 ${searched ? new Date(searched).toLocaleString("zh-CN") : "未知"}` +
+        `  ·  时效窗口 ${opts.timeRange ?? "不限"}` +
+        `  ·  排序 ${opts.sortMode ?? "relevant"}`,
+    ),
+  );
+
+  section("搜索结果", coverage(results));
+  section("已抓取正文", coverage(docs));
+
+  // 正文的日期是抓取时从页面元信息里读出来的，与搜索层给的是两条独立来源。
+  // 两者差得越多，越说明搜索层那条路指望不上。
+  const fromPage = docs.filter((d) => d.publishedAt).length;
+  if (docs.length > 0) {
+    console.log(
+      C.dim(
+        `  正文里有 ${fromPage} 篇的日期来自页面元信息（meta / JSON-LD / <time>）` +
+          `，其余的上游本来就没写`,
+      ),
+    );
+  }
+
+  const byProvider = new Map();
+  for (const r of results) {
+    const t = byProvider.get(r.provider) ?? { total: 0, known: 0, signals: 0 };
+    t.total += 1;
+    if (r.publishedAt) t.known += 1;
+    if (r.signals?.length) t.signals += 1;
+    byProvider.set(r.provider, t);
+  }
+  if (byProvider.size > 0) {
+    console.log(C.bold("\n  按提供方"));
+    for (const [p, t] of [...byProvider.entries()].sort((a, b) => b[1].total - a[1].total)) {
+      const pct = Math.round((t.known / t.total) * 100);
+      const bar = "█".repeat(Math.round(pct / 5)).padEnd(20, "·");
+      console.log(
+        `    ${pad(p, 12)} ${C.dim(`${String(t.known).padStart(3)}/${String(t.total).padEnd(3)} ${String(pct).padStart(3)}%`)} ${bar} ${C.dim(`声量 ${t.signals}/${t.total}`)}`,
+      );
+    }
+  }
+
+  showBodyQuality(docs);
+  console.log();
+}
+
+/**
+ * 正文可用性。
+ *
+ * 和时效覆盖率是**两条独立的轴**，必须分开看：一批资料可以全部标着
+ * 发布日期，却一篇正文都没抓到 —— 那样拓扑图仍然会出来，只是它建在
+ * 搜索摘要上，长得像拓扑而已。这个视图就是用来把这种情况显形的。
+ */
+function showBodyQuality(docs) {
+  if (docs.length === 0) return;
+
+  const counts = { full: 0, thin: 0, snippet: 0 };
+  for (const d of docs) counts[grade(d)] += 1;
+  const pct = Math.round(((counts.full + counts.thin) / docs.length) * 100);
+
+  const color = pct >= 70 ? C.green : pct >= 40 ? C.yellow : (s) => s;
+  console.log(C.bold("\n  正文可用性"));
+  console.log(
+    `    ${color(`${String(counts.full + counts.thin).padStart(3)}/${String(docs.length).padEnd(3)} ${String(pct).padStart(3)}%`)} ` +
+      C.dim(`完整 ${counts.full} · 偏短 ${counts.thin} · 仅摘要 ${counts.snippet}`),
+  );
+  if (counts.snippet > 0) {
+    console.log(
+      C.dim(
+        `    有 ${counts.snippet} 篇只有搜索摘要。摘要是按标题匹配的短文本，` +
+          `进 TF-IDF 会把权重全拉平 —— 拓扑仍然会画出来，但那张图没有语义结构。`,
+      ),
+    );
+  }
+
+  // 抓取失败的原因是最该被看见的，但现有的 --docs 视图把它和成功项混在一起
+  const failed = docs.filter((d) => d.error);
+  if (failed.length > 0) {
+    console.log(C.bold("\n  抓取失败原因"));
+    const byReason = new Map();
+    for (const d of failed) {
+      const key = d.error.slice(0, 40);
+      byReason.set(key, (byReason.get(key) ?? 0) + 1);
+    }
+    for (const [reason, n] of [...byReason.entries()].sort((a, b) => b[1] - a[1])) {
+      console.log(`    ${String(n).padStart(3)} 篇  ${C.dim(reason)}`);
+    }
+  }
+}
+
+/** 与服务端 `core/quality.ts` 的分档保持一致，下面两个阈值必须同步改。 */
+function grade(d) {
+  if (d.error || d.extractMethod === "raw") return "snippet";
+  const chars = (d.text ?? "").trim().length;
+  if (chars >= 300) return "full";
+  if (chars >= 120) return "thin";
+  return "snippet";
+}
+
+/** 一段覆盖率小结。`undefined` 的日期一律计入「未知」，绝不拿别的字段顶替。 */
+function coverage(items) {
+  const total = items.length;
+  const times = items
+    .map((x) => x.publishedAt)
+    .filter(Boolean)
+    .map((t) => Date.parse(t))
+    .filter((n) => !Number.isNaN(n));
+
+  return {
+    total,
+    known: items.filter((x) => x.publishedAt).length,
+    oldest: times.length > 0 ? new Date(Math.min(...times)) : null,
+    newest: times.length > 0 ? new Date(Math.max(...times)) : null,
+  };
+}
+
+function section(name, c) {
+  const pct = c.total === 0 ? 0 : Math.round((c.known / c.total) * 100);
+  const span =
+    c.oldest && c.newest
+      ? `${ymd(c.oldest)} ~ ${ymd(c.newest)}`
+      : "全部未知";
+  console.log(
+    `  ${pad(name, 14)} ${C.dim(`${String(c.known).padStart(3)}/${String(c.total).padEnd(3)} ${String(pct).padStart(3)}%`)}  ${C.dim(span)}`,
+  );
+}
+
+function ymd(d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 async function showReport(s, id) {
   const file = join(SESSIONS, id, "report.md");
   if (!existsSync(file)) {
@@ -200,5 +355,6 @@ if (!sessionId) {
   const s = await loadSession(sessionId);
   if (flags.has("--report")) await showReport(s, sessionId);
   else if (flags.has("--docs")) showDocs(s);
+  else if (flags.has("--coverage")) showCoverage(s);
   else showGraph(s);
 }

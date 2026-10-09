@@ -10,6 +10,7 @@ import { Readability } from "@mozilla/readability";
 import * as cheerio from "cheerio";
 import TurndownService from "turndown";
 import type { DocImage } from "@/core/types";
+import { normalizeToIso } from "@/core/dates";
 
 export interface Extraction {
   title: string;
@@ -103,6 +104,15 @@ export function extractWithReadability(
 
   const doc = dom.window.document;
 
+  /*
+    日期必须在 stripNonContent **之前**读。
+
+    结构化数据（JSON-LD）就住在 `<script type="application/ld+json">` 里，
+    而下一步会把所有 script 物理删掉 —— 顺序反了就永远读不到它，且不会有
+    任何报错，只是日期一直显示「未知」。
+  */
+  const metaDate = extractMetaDate(doc);
+
   // 必须在任何提取之前剥离：下面的 Readability 和 body.textContent 兜底
   // 都会读到这些标签里的代码/CSS
   stripNonContent(doc);
@@ -147,7 +157,15 @@ export function extractWithReadability(
     markdown = text;
   }
 
-  const publishedIso = publishedAt ? safeIso(publishedAt) : undefined;
+  /*
+    我们自己那套元信息链优先于 Readability 的 `article.publishedTime`。
+
+    不是因为它更准，而是因为它**更全**：Readability 只认少数几个 meta，
+    而中文站点的日期大量藏在 `<time datetime>`、JSON-LD 和 `pubdate` 这类
+    属性里。两边的第一选择其实是同一个（`article:published_time`），
+    所以只有在 Readability 一无所获时才会看出差别。
+  */
+  const publishedIso = metaDate ?? (publishedAt ? normalizeToIso(publishedAt) : undefined);
 
   return {
     title,
@@ -186,6 +204,120 @@ export function looksLikeSpa(html: string, extraction: Extraction): boolean {
     0,
   );
   return html.length > 0 && scriptChars / html.length > 0.5;
+}
+
+// ─────────────────────────── 发布日期 ───────────────────────────
+
+/**
+ * 日期元信息的查找顺序。
+ *
+ * 靠前的是结构化程度最高、最不容易出错的。`name="date"` 排在最后是有意的 ——
+ * 它太泛，有些站点拿它放「本页更新于」甚至别的语义，能不用就不用。
+ */
+const DATE_META_SELECTORS = [
+  'meta[property="article:published_time"]',
+  'meta[property="og:published_time"]',
+  'meta[itemprop="datePublished"]',
+  'meta[name="article:published_time"]',
+  'meta[name="parsely-pub-date"]',
+  'meta[name="sailthru.date"]',
+  'meta[name="publish-date"]',
+  'meta[name="publishdate"]',
+  'meta[name="pubdate"]',
+  'meta[name="date"]',
+  'meta[name="DC.date.issued"]',
+  'meta[name="dc.date"]',
+];
+
+/** JSON-LD 里表示「这篇文章什么时候发的」的键，按可信度排序。 */
+const JSONLD_DATE_KEYS = ["datePublished", "dateCreated", "uploadDate", "dateModified"];
+
+/** `<time>` 元素最多扫这么多个 —— 有些页面把时间轴上的每个刻度都做成 `<time>`。 */
+const MAX_TIME_ELEMENTS = 50;
+
+/**
+ * 从页面里挖出发布日期。
+ *
+ * 这是一处**投入产出比极高**的改动：搜索层给的日期覆盖率实测是 0%（纯
+ * SearXNG 会话几十条结果一条日期都没有），而页面自己其实常常是知道的 ——
+ * 只是藏在 meta、JSON-LD 或 `<time>` 里，此前没人去读。抓取这一步顺手
+ * 把它带出来，几乎是白捡的。
+ *
+ * 返回归一化后的 ISO 串；所有候选都解析不出来时返回 `undefined`（表示
+ * 「这页确实没写日期」，而不是「我们没找到」—— 两者在展示上是一回事，
+ * 但对调用方而言只有一个诚实答案）。
+ */
+export function extractMetaDate(doc: Document): string | undefined {
+  for (const raw of dateCandidates(doc)) {
+    const iso = normalizeToIso(raw);
+    if (iso) return iso;
+  }
+  return undefined;
+}
+
+/**
+ * 按优先级收集所有候选日期串。
+ *
+ * 收集而不是「找到第一个就返回」：某个站点把 meta 写成 `"未知"` 是常事，
+ * 那种值解析不出来，但下一顺位的 JSON-LD 往往是好的。逐条试、取第一条
+ * **能解析成功**的，比取第一条**存在**的稳得多。
+ */
+function dateCandidates(doc: Document): string[] {
+  const out: string[] = [];
+
+  for (const sel of DATE_META_SELECTORS) {
+    const v = doc.querySelector(sel)?.getAttribute("content")?.trim();
+    if (v) out.push(v);
+  }
+
+  out.push(...jsonLdDates(doc));
+
+  const times = doc.querySelectorAll("time[datetime]");
+  for (let i = 0; i < times.length && i < MAX_TIME_ELEMENTS; i += 1) {
+    const v = times[i].getAttribute("datetime")?.trim();
+    if (v) out.push(v);
+  }
+
+  return out;
+}
+
+/**
+ * 从 JSON-LD 里取日期。
+ *
+ * 线上页面的 JSON-LD 有三个现实情况必须容错：可能语法就是错的（手写、
+ * 拼接产生），可能是数组，也可能把文章包在 `@graph` 里而日期在下一层。
+ * 所以坏块跳过而不是整体失败，并且递归找。
+ */
+function jsonLdDates(doc: Document): string[] {
+  const out: string[] = [];
+  for (const block of doc.querySelectorAll('script[type="application/ld+json"]')) {
+    let data: unknown;
+    try {
+      data = JSON.parse(block.textContent ?? "");
+    } catch {
+      continue;
+    }
+    collectJsonLdDates(data, out, 0);
+  }
+  return out;
+}
+
+function collectJsonLdDates(node: unknown, out: string[], depth: number): void {
+  if (depth > 6 || node === null || typeof node !== "object") return;
+
+  if (Array.isArray(node)) {
+    for (const item of node) collectJsonLdDates(item, out, depth + 1);
+    return;
+  }
+
+  const obj = node as Record<string, unknown>;
+  for (const key of JSONLD_DATE_KEYS) {
+    const v = obj[key];
+    if (typeof v === "string" && v.trim()) out.push(v.trim());
+  }
+  for (const v of Object.values(obj)) {
+    if (v !== null && typeof v === "object") collectJsonLdDates(v, out, depth + 1);
+  }
 }
 
 // ─────────────────────────── 内部工具 ───────────────────────────
@@ -292,11 +424,6 @@ function htmlToMarkdown(html: string, baseUrl: string): string {
   } catch {
     return "";
   }
-}
-
-function safeIso(raw: string): string | undefined {
-  const d = new Date(raw);
-  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
 }
 
 export { THIN_THRESHOLD };
