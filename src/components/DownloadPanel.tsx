@@ -23,6 +23,7 @@ import type {
   TaskStatus,
 } from "@/core/types";
 import { getSse } from "@/components/postSse";
+import { BODY_GRADE_LABELS, qualitySummary } from "@/core/quality";
 
 interface Props {
   sessionId: string | null;
@@ -270,6 +271,17 @@ export default function DownloadPanel({ sessionId, documents }: Props) {
         )}
       </h2>
 
+      {/*
+        质量分布 + 打包入口。
+
+        放在「选项」**上面**是刻意的：用户得在勾选之前就知道这一批里到底
+        有多少篇是完整正文 —— 否则等下载完才发现包很小，那已经晚了。
+        计数用的是 `qualitySummary`，与服务端打包的判据同源（同一份
+        `quality.ts`），所以这里的数字和 ZIP 里的文件数必然一致。
+      */}
+      <QualityLine documents={documents} />
+      <PackButton sessionId={sessionId} documents={documents} />
+
       {/* ── 选项 ── */}
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {ALL_KINDS.map((k) => {
@@ -500,6 +512,90 @@ export default function DownloadPanel({ sessionId, documents }: Props) {
 }
 
 // ─────────────────────────── 子组件 ───────────────────────────
+
+/**
+ * 这一批资料的质量分布。
+ *
+ * 只讲「我们拿到了多少正文」，不讲「内容好不好」—— 后者这个工具给不出，
+ * 硬给一个分数就是伪精度（见 `quality.ts` 模块头注释）。文案必须把这条
+ * 边界说清楚，否则「优质」会被读成「可信」。
+ */
+function QualityLine({ documents }: { documents: Document[] }) {
+  const q = useMemo(() => qualitySummary(documents), [documents]);
+  if (q.total === 0) return null;
+
+  const pct = Math.round((q.counts.full / q.total) * 100);
+
+  return (
+    <div
+      style={{
+        fontSize: 12,
+        margin: "0 0 10px",
+        padding: "8px 10px",
+        background: "var(--bg)",
+        border: "1px solid var(--border-subtle)",
+        borderRadius: 6,
+      }}
+    >
+      <div>
+        <strong>优质 {q.counts.full} 篇</strong>
+        <span className="dim">
+          （占 {pct}%） · {BODY_GRADE_LABELS.thin} {q.counts.thin} 篇 ·{" "}
+          {BODY_GRADE_LABELS.snippet} {q.counts.snippet} 篇 · 共 {q.total} 篇
+        </span>
+      </div>
+      <div className="dim" style={{ fontSize: 11, marginTop: 4 }}>
+        优质 = 正文 ≥300 字且抓取无错。这只说明**拿到了正文**，不说明内容对不对
+        —— 本工具不做事实核查。没进包的资料不会被丢弃，会逐条列在包内的「未收录.md」里。
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 打包下载。
+ *
+ * 用普通 `<a href>` 而不是 fetch + Blob：这个路由带了 `Content-Disposition`，
+ * 浏览器自己就会弹保存框。走 fetch 反而要把几十 MB 在内存里绕一圈，
+ * 而且失败时（409/413）拿到的是一个 JSON，用户看到的会是一个白页。
+ * 沿用导出报告（`page.tsx`）已经验证过的那条路。
+ */
+function PackButton({
+  sessionId,
+  documents,
+}: {
+  sessionId: string | null;
+  documents: Document[];
+}) {
+  const q = useMemo(() => qualitySummary(documents), [documents]);
+  const empty = q.counts.full === 0;
+
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <a
+        className="btn btn-primary"
+        style={{
+          fontSize: 12,
+          display: "inline-block",
+          textDecoration: "none",
+          opacity: empty ? 0.5 : 1,
+          pointerEvents: empty ? "none" : "auto",
+        }}
+        href={`/api/package?sessionId=${encodeURIComponent(sessionId ?? "")}`}
+        title={
+          empty
+            ? "这一批里没有一篇拿到完整正文，包里会只有报告和未收录清单"
+            : "报告 + 每篇优质资料的 Markdown + 字幕；配图需要先跑一次下载"
+        }
+      >
+        打包下载 ZIP（{q.counts.full} 篇优质）
+      </a>
+      <div className="dim" style={{ fontSize: 11, marginTop: 5 }}>
+        正文与报告**不需要**先跑下载，直接打包；配图和字幕要先跑一次上面的下载才有。
+      </div>
+    </div>
+  );
+}
 
 function TaskRow({ task, title }: { task: DownloadTask; title?: string }) {
   const pct =

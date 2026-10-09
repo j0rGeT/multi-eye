@@ -22,7 +22,7 @@ import { promisify } from "node:util";
 import type { Document, DownloadKind } from "@/core/types";
 import { config, ytdlpCommonArgs } from "@/core/env";
 import { httpFetch } from "@/core/fetch/agent";
-import { siteLabel } from "@/core/search/sites";
+import { renderDocMarkdown, renderDocTranscript } from "@/core/export/docmarkdown";
 
 const execFileAsync = promisify(execFile);
 
@@ -121,36 +121,21 @@ export async function runTask(ctx: RunContext): Promise<number> {
 /**
  * 正文存成 Markdown。
  *
- * 前面加一段元信息而不是直接把正文倒出来：这份文件脱离本工具之后仍然要能
- * 用 —— 半年后打开它，得知道它是从哪来的、什么时候抓的、原文什么样。
+ * 渲染本身在 `core/export/docmarkdown.ts` —— 打包路由要产出**字节一致**的
+ * 同一份文件，所以只能有一处定义。
  */
 async function writeArticle(ctx: RunContext): Promise<number> {
   const { doc, assetsDir, plan } = ctx;
-  const body = doc.markdown?.trim() || doc.text;
-  const meta = [
-    "---",
-    `title: ${JSON.stringify(doc.title)}`,
-    `source: ${doc.url}`,
-    `site: ${siteLabel(doc.site)}`,
-    ...(doc.author ? [`author: ${JSON.stringify(doc.author)}`] : []),
-    ...(doc.publishedAt ? [`published: ${JSON.stringify(doc.publishedAt)}`] : []),
-    `fetched: ${doc.fetchedAt}`,
-    `words: ${doc.wordCount}`,
-  ];
-  if (doc.error) meta.push(`extractNote: ${JSON.stringify(doc.error)}`);
-  meta.push("---");
-
-  const content = `${meta.join("\n")}\n\n# ${doc.title}\n\n${body}\n`;
-  return writeAtomic(join(assetsDir, plan.outputPath), content, ctx);
+  return writeAtomic(join(assetsDir, plan.outputPath), renderDocMarkdown(doc), ctx);
 }
 
 async function writeTranscript(ctx: RunContext): Promise<number> {
   const { doc, assetsDir, plan } = ctx;
-  const header =
-    `# ${doc.title}\n` +
-    `# 来源：${doc.url}\n` +
-    `# 抓取：${doc.fetchedAt}（${doc.extractMethod}）\n\n`;
-  return writeAtomic(join(assetsDir, plan.outputPath), header + doc.text, ctx);
+  return writeAtomic(
+    join(assetsDir, plan.outputPath),
+    renderDocTranscript(doc),
+    ctx,
+  );
 }
 
 /**

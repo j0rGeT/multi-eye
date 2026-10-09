@@ -109,6 +109,41 @@ function bytes(n) {
 }
 
 /**
+ * 列出 ZIP 里的条目名。
+ *
+ * 自己解而不是引个依赖：这个脚本是「零依赖、能直接 node 跑」的 —— 那是它
+ * 能在任何环境里当验收入口的前提。为了一条断言引入解压库不划算。
+ *
+ * 走**中央目录**而不是扫本地文件头：本地头里可能带 data descriptor（长度写
+ * 成 0，真值在后面），扫下去会错位。中央目录是权威的、长度字段是准的。
+ */
+async function listZipEntries(buf) {
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const dec = new TextDecoder("utf-8");
+
+  // 从尾部往回找 EOCD（0x06054b50）。注释区最长 64KB，所以只扫这么多。
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 65535); i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error("不是合法的 ZIP：找不到 EOCD");
+
+  const count = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  const names = [];
+
+  for (let i = 0; i < count; i++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break; // 中央目录头签名
+    const nameLen = dv.getUint16(p + 28, true);
+    const extraLen = dv.getUint16(p + 30, true);
+    const commentLen = dv.getUint16(p + 32, true);
+    names.push(dec.decode(buf.subarray(p + 46, p + 46 + nameLen)));
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return names;
+}
+
+/**
  * 按站点轮流取前 `limit` 条，保持每组内部的原有顺序。
  *
  * 输入已经是融合排序过的列表，所以每组的组内顺序就是「该站点里最该抓的」；
@@ -543,6 +578,116 @@ try {
   if (savedTo) {
     const onDisk = await readFile(savedTo, "utf8").catch(() => "");
     check("导出", "磁盘上的 report.md 与响应一致", onDisk === markdown, `${bytes(onDisk.length)}`);
+  }
+
+  // ── 6.5 打包 ZIP ───────────────────────────────────────────
+  //
+  // 关键是**不依赖下载任务**：全新的会话直接请求就该拿到正文。
+  // 所以这一步放在第 7 步（下载）之前 —— 如果它要靠下载产物才能过，
+  // 顺序一换就会红。
+  step("6.5 打包下载 ZIP");
+
+  const pkRes = await fetch(`${BASE}/api/package?sessionId=${sessionId}`);
+  const pkBuf = new Uint8Array(await pkRes.arrayBuffer());
+
+  check("打包", "HTTP 200", pkRes.status === 200, `HTTP ${pkRes.status}`);
+  check(
+    "打包",
+    "Content-Type 是 application/zip",
+    (pkRes.headers.get("content-type") ?? "").startsWith("application/zip"),
+    pkRes.headers.get("content-type") ?? "",
+  );
+  check(
+    "打包",
+    "Content-Disposition 带 RFC 5987 文件名",
+    /filename\*=UTF-8''/.test(pkRes.headers.get("content-disposition") ?? ""),
+    pkRes.headers.get("content-disposition") ?? "",
+  );
+  // ZIP 的本地文件头魔数。只看状态码的话，一个返回 JSON 错误页的
+  // 200 响应也能"通过"。
+  check(
+    "打包",
+    "是合法的 ZIP（本地文件头魔数 PK\\x03\\x04）",
+    pkBuf[0] === 0x50 && pkBuf[1] === 0x4b && pkBuf[2] === 0x03 && pkBuf[3] === 0x04,
+    pkBuf.length > 0 ? `前四字节 ${[...pkBuf.slice(0, 4)].map((b) => b.toString(16)).join(" ")}` : "空响应",
+  );
+
+  const pkList = await listZipEntries(pkBuf);
+  const pkBody = pkList.filter((n) => n.startsWith("正文/"));
+  const pkIncluded = Number(pkRes.headers.get("x-package-included") ?? "-1");
+
+  check("打包", "含 报告.md", pkList.includes("报告.md"), `${pkBuf.length} 字节 · ${pkList.length} 个条目`);
+  check(
+    "打包",
+    "含 未收录.md（绝不静默丢东西）",
+    pkList.includes("未收录.md"),
+    pkList.includes("未收录.md") ? "" : `实际条目：${pkList.slice(0, 8).join(", ")}`,
+  );
+  check(
+    "打包",
+    "正文/ 文件数 == X-Package-Included（与服务端同一判据）",
+    pkBody.length === pkIncluded,
+    `正文 ${pkBody.length} vs 头 ${pkIncluded}`,
+  );
+  // 全新会话里够格打包的篇数，正是 e2e 前面抓到的那些
+  soft(
+    "打包",
+    `正文/ 非空 —— ${pkBody.length} 篇`,
+    pkBody.length > 0 ? `${pkBody.length} 篇` : "包内没有正文文件（可能是本轮一篇都没抓到完整正文）",
+  );
+
+  // ── 6.6 抓取质量回归 ───────────────────────────────────────
+  //
+  // P11 的核心修复：B 站 /list/ 这类页面上，Readability 抽到的「主内容」是
+  // 侧栏的「接下来播放」推荐列表 —— 一千多字，没有一句是这个页面的内容，
+  // 却会带着 error: undefined 当成一篇完整资料收下。
+  //
+  // 这一条直接盯住那个检测器。它是个**纯函数**（没有 import），所以能直接
+  // 从 .ts 源码引进来跑。老版本 Node 不认识 .ts（需要类型剥离）时降级为跳过，
+  // 不让整个套件因此变红。
+  step("6.6 抓取质量回归（导航当正文）");
+
+  let boilerplateReason = null;
+  try {
+    ({ boilerplateReason } = await import("../src/core/fetch/boilerplate.ts"));
+  } catch (err) {
+    soft("抓取质量", "能加载 boilerplate.ts", `跳过：当前 Node 不支持直接跑 .ts（${err.message}）`);
+  }
+
+  if (boilerplateReason) {
+    // 真实样本（data/sessions/Ascj_hG6B6，原样截取）—— 必须拦下
+    const junk = [
+      "李宏毅 | 大模型（LLM）系列课程入门全集… 7413播放",
+      "李宏毅 | Harness Engineer教程… 8117播放",
+      "Transformer 逐段精读 1.2万播放",
+      "手搓 Transformer 3.4万播放",
+    ].join("\n");
+    check(
+      "抓取质量",
+      "拦下「N播放」推荐列表",
+      Boolean(boilerplateReason(junk)),
+      boilerplateReason(junk) ?? "**漏判了** —— 这正是 P11 要修的那个 bug",
+    );
+
+    // 反例：真正文里偶尔提一次播放量是合理的（博主真的在讨论视频数据），
+    // 不能因为出现就判成推荐位
+    const prose =
+      "这篇文章对比了几个主流模型。DeepSeek 那条视频有 1200万播放，" +
+      "但播放量高不等于结论可靠，我们更该看它引用的原始论文。";
+    check(
+      "抓取质量",
+      "放过提到播放量的正文",
+      boilerplateReason(prose) === null,
+      boilerplateReason(prose) ?? "",
+    );
+
+    // B 站页面骨架（导航条 / 播放页工具条）
+    check(
+      "抓取质量",
+      "拦下 B 站页面骨架",
+      Boolean(boilerplateReason("首页 番剧 直播 游戏中心 会员购\n点赞 投币 收藏 稿件 投诉")),
+      "",
+    );
   }
 
   // ── 7. 下载 ────────────────────────────────────────────────

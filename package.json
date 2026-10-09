@@ -27,6 +27,7 @@
     "cytoscape": "^3.34.3",
     "cytoscape-fcose": "^2.2.0",
     "fast-xml-parser": "^5.11.2",
+    "fflate": "^0.8.3",
     "graphology": "^0.26.0",
     "graphology-communities-louvain": "^2.0.2",
     "jieba-wasm": "^2.4.0",
