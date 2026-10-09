@@ -697,6 +697,22 @@ try {
   );
   check("导出", "按簇分了章节", (markdown.match(/^#{2,3}\s/gm) ?? []).length >= 2, `${(markdown.match(/^#{2,3}\s/gm) ?? []).length} 个小节`);
 
+  /*
+    「站点抓取局限」只在**本次真的搜到过**受限站点时才出现 —— 这一轮的 e2e
+    查询在一个只有几个站点的集合上跑，命不中很正常，所以是 soft：
+    它要防的是「这一节被重构掉了」，不是「这一次没触发」。
+
+    顺带钉一句相反的：这一节出现时，它必须带「不是故障」这个结论。少了这半句，
+    它就只是一张重复了「站点分布」的表，白占位置。
+  */
+  const limitationIdx = markdown.indexOf("## 站点抓取局限");
+  check(
+    "导出",
+    "「站点抓取局限」若出现必须带结论（本轮没搜到受限站点则视为通过）",
+    limitationIdx === -1 || /不是故障/.test(markdown.slice(limitationIdx, limitationIdx + 1200)),
+    limitationIdx === -1 ? "本轮未触发" : "已出现且带「不是故障」",
+  );
+
   const savedTo = res.headers.get("x-saved-to");
   check("导出", "已落盘", Boolean(savedTo), savedTo ?? "未回 X-Saved-To");
   if (savedTo) {
@@ -1160,6 +1176,68 @@ try {
       "超时合成",
       "release() 之后不再超时（定时器已清，不会漏）",
       !d.signal.aborted,
+      "",
+    );
+  }
+
+  /*
+    6.12 —— 已知站点限制的翻译。
+
+    知乎 109/109 全是「HTTP 403」，那是平台策略而不是故障，但用户看到的和
+    「网络超时」一模一样的一句话，于是会去查代理、翻日志。
+
+    这里钉两件事：**该翻译的翻译**（zhihu + 403），以及**不该翻译的绝不翻译**
+    （B站接口 500 是真故障；YouTube 没有字幕是真结果）。第二件更要紧 ——
+    把真故障贴上「已知限制」的标签，会让用户照着这句话放弃排查。
+  */
+  step("6.12 已知站点限制（翻译错误，但不粉饰故障）");
+
+  let knownLimitation = null;
+  let isKnownLimitation = null;
+  try {
+    ({ knownLimitation, isKnownLimitation } = await import("../src/core/fetch/limitations.ts"));
+  } catch (err) {
+    soft("站点限制", "能加载 limitations.ts", `跳过：当前 Node 不支持直接跑 .ts（${err.message}）`);
+  }
+
+  if (knownLimitation) {
+    // (a) 该翻译的：知乎 403
+    const zhihu = knownLimitation("zhihu", "HTTP 403");
+    check(
+      "站点限制",
+      "知乎 403 → 说成「已知限制」而不是「故障」",
+      Boolean(zhihu) && zhihu.includes("已知限制") && zhihu.includes("403"),
+      zhihu ?? "**没翻译** —— 用户会把它当成一次普通故障去排查",
+    );
+    check(
+      "站点限制",
+      "翻译后的文案能被 isKnownLimitation 认回来（未收录.md 的分组靠它）",
+      isKnownLimitation(zhihu),
+      "",
+    );
+
+    // (b) 不该翻译的：真故障 / 真结果，一律返回 null 保留原始文案
+    const notLimitations = [
+      ["bilibili", "HTTP 500", "B站接口 500 是服务端故障"],
+      ["bilibili", "接口返回 code=62002 稿件不可见", "稿件被删是真实结果"],
+      ["youtube", "该视频没有可用字幕", "没字幕是真实结果，不是平台限制"],
+      ["web", "HTTP 403", "「web」是聚合站点名，403 可能来自任何地方，不该替它下结论"],
+      ["zhihu", "超时（15000ms）", "知乎超时是本次的失败，不是平台限制"],
+    ];
+    for (const [site, error, note] of notLimitations) {
+      check(
+        "站点限制",
+        `${note} → 不翻译`,
+        knownLimitation(site, error) === null,
+        knownLimitation(site, error) ?? "",
+      );
+    }
+
+    // (c) 判据要窄：站点与特征必须同时命中
+    check(
+      "站点限制",
+      "站点对不上就不认（同样的 403，换成 web 不算知乎的限制）",
+      knownLimitation("web", "HTTP 403") === null && knownLimitation("zhihu", "HTTP 403") !== null,
       "",
     );
   }

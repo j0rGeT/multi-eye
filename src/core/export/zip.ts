@@ -45,6 +45,7 @@ import { assetsDir } from "@/core/store";
 import { isPackageWorthy, whyNotPackaged } from "@/core/quality";
 import { fileStem } from "@/core/download/kinds";
 import { DOC_KIND_LABELS, docKind, packageDirFor } from "@/core/kind";
+import { isKnownLimitation } from "@/core/fetch/limitations";
 import { renderMarkdownReport, reportFileName } from "./markdown";
 import { renderDocMarkdown, renderDocTranscript } from "./docmarkdown";
 
@@ -244,9 +245,38 @@ function renderExcluded(
     return out.join("\n");
   }
 
+  const bullet = (d: Document): string => {
+    const title = d.title?.trim() || "(无标题)";
+    // 带上类型：正文侧按 文章/视频 分了目录，这里也照同一份判据标注，
+    // 用户扫一眼就知道「少的是几篇图文还是几个视频」
+    return `- [${title}](${d.url}) · ${d.site} · ${DOC_KIND_LABELS[d.kind]}`;
+  };
+
+  /*
+    已知的站点限制单独排在最前面，而且**不按原因分组**。
+
+    理由是这两类东西该被读成两件事：一组是「平台就是不给」（知乎 403），
+    另一组是「这次没抓到」（超时、站点下线）。混在同一个 `whyNotPackaged`
+    分组里，用户看到的是「正文没抓到，只有搜索摘要 —— 31 篇」，于是会去查
+    为什么抓不到；分开写，他第一眼就知道其中一大半连查都不用查。
+  */
+  const limited = excluded.filter((d) => isKnownLimitation(d.error));
+  const rest = excluded.filter((d) => !isKnownLimitation(d.error));
+
+  if (limited.length > 0) {
+    out.push(`## 已知的站点限制 —— ${limited.length} 篇`, "");
+    out.push(
+      "> 这些**不是故障**：站点本身就对未登录的访问返回 403 / 风控页。本项目不逆向签名、",
+      "> 不碰登录态，所以只能拿到搜索摘要。换代理、改配置都不会变 —— 详情见报告里的「站点抓取局限」一节。",
+      "",
+    );
+    for (const d of limited) out.push(bullet(d));
+    out.push("");
+  }
+
   // 按原因归类：同一类问题一次说完，比逐条罗列更好读，也更容易看出「这是站点问题还是抓取问题」
   const groups = new Map<string, Document[]>();
-  for (const d of excluded) {
+  for (const d of rest) {
     const reason = whyNotPackaged(d);
     const list = groups.get(reason);
     if (list) list.push(d);
@@ -257,12 +287,7 @@ function renderExcluded(
 
   for (const [reason, docs] of ordered) {
     out.push(`## ${reason} —— ${docs.length} 篇`, "");
-    for (const d of docs) {
-      const title = d.title?.trim() || "(无标题)";
-      // 带上类型：正文侧按 文章/视频 分了目录，这里也照同一份判据标注，
-      // 用户扫一眼就知道「少的是几篇图文还是几个视频」
-      out.push(`- [${title}](${d.url}) · ${d.site} · ${DOC_KIND_LABELS[d.kind]}`);
-    }
+    for (const d of docs) out.push(bullet(d));
     out.push("");
   }
 

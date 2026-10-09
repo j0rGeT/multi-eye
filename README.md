@@ -159,6 +159,7 @@ src/
 │  ├─ search/                 provider / searxng / serper / ytdlp / sites
 │  ├─ fetch/                  extract（降级链）/ http / agent（代理）/ readability
 │  │                          / playwright / youtube / bilibili
+│  │                          / limitations（已知站点限制的翻译规则）
 │  ├─ graph/                  build（统一入口）/ heuristic / llm / tokenize / communities
 │  │                          / palette（配色唯一来源）/ geometry（尺寸唯一来源）
 │  ├─ export/                 markdown.ts（报告）/ svg.ts（拓扑图）
@@ -202,6 +203,11 @@ data/sessions/<id>/           运行时产物（gitignore）
 - 不做分布式/多机 —— 单机个人工具
 
 ## 已知限制
+
+这一节说的每一件事，**在报告和下载包里都会自己说出来**：报告的「站点抓取局限」一节列出本次
+受限的站点和原因，`未收录.md` 把这一类排在最前面并标注「不是故障」。翻译规则在
+`src/core/fetch/limitations.ts` —— 只有**站点 + 特征同时命中**才认，认不出的（B站 500、
+知乎超时）一律保留原始错误，不粉饰成平台限制。
 
 | 现象 | 原因 |
 |---|---|

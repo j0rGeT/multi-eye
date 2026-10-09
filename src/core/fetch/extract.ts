@@ -31,6 +31,7 @@ import { config } from "@/core/env";
 import { fetchHtml } from "./http";
 import { extractWithReadability, looksLikeCode, looksLikeSpa } from "./readability";
 import { boilerplateReason } from "./boilerplate";
+import { knownLimitation } from "./limitations";
 import { contentKind } from "@/core/kind";
 import { fetchWithBrowser, isPlaywrightAvailable } from "./playwright";
 import { fetchTranscript, isYoutubeUrl } from "./youtube";
@@ -430,6 +431,16 @@ function buildDoc(r: SearchResult, p: DocParts): Document {
   };
 }
 
+/**
+ * 全部降级路径的唯一出口 —— 六个调用点都走这里。
+ *
+ * 错误文案在这一处翻译成「已知限制」，而不是在每个调用点各写一遍：调用点只
+ * 需要给出**发生了什么**（`HTTP 403`、`该视频没有可用字幕`），由 `knownLimitation`
+ * 判断这是不是一条平台固有属性，是就换成带结论的说法。放在 choke point 上，
+ * 将来新增降级路径也自动获得这个待遇，不会漏。
+ *
+ * 没命中时**原样保留**原始错误 —— 绝不把一次真故障说成「已知限制」。
+ */
 function fallbackDocument(
   r: SearchResult,
   error: string,
@@ -443,7 +454,7 @@ function fallbackDocument(
     title: r.title,
     publishedAt: extra.publishedAt,
     startedAt,
-    error,
+    error: knownLimitation(r.site, error) ?? error,
   });
 }
 

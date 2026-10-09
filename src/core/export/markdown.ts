@@ -16,6 +16,7 @@
 import type { DocKind, Document, GraphModel, SearchResult, Session } from "@/core/types";
 import { DOC_KIND_LABELS, contentKind, docKind } from "@/core/kind";
 import { siteLabel } from "@/core/search/sites";
+import { SITE_LIMITATION_NOTES } from "@/core/fetch/limitations";
 import { SORT_LABELS, TIME_RANGE_LABELS } from "@/core/search/filter";
 import { dateCoverage, dateSpan, formatDate, formatDateTime, formatSpan } from "@/core/time";
 import { BODY_GRADE_LABELS, bodyGrade, qualitySummary } from "@/core/quality";
@@ -76,6 +77,7 @@ export function renderMarkdownReport(
 
   out.push(overview(session, graphedDocIds.size));
   out.push(siteDistribution(session));
+  out.push(siteLimitationSection(session));
 
   if (graph && graph.clusters.length > 0 && opts.includeMermaid !== false) {
     out.push(topologyGraph(graph));
@@ -321,6 +323,69 @@ function siteDistribution(session: Session): string {
   )) {
     body.push(`| ${siteLabel(site)} | ${t.results} | ${t.withContent} |`);
   }
+  return body.join("\n");
+}
+
+/**
+ * 「站点抓取局限」。
+ *
+ * 紧跟在「站点分布」后面，因为这两节回答的是同一组数字 —— 分布表告诉读者
+ * 「知乎 12 条里 0 条拿到正文」，这一节紧接着解释**为什么**。
+ *
+ * 没有这一节的话，那张表读起来就是「系统在知乎上一条都没抓成功」，
+ * 而真相是「知乎对未登录访问一律 403，这是平台策略，不是故障」。前者会
+ * 让人去查代理、查配置、翻日志，查一个不存在的问题。
+ *
+ * 收录标准（一条，对谁都一样）：**这次搜到过，且这一次确实没抓全**。
+ *
+ * 判据是 `出过错 或 拿到正文 < 搜到结果`，而不是「这个站点在
+ * `SITE_TARGETS` 里被标了 `contentLimited`」。差别在 X 这种场合：它确实是
+ * 受限站点，但这一次 2 条全拿到了正文 —— 写进去就成了「X | 2/2 | 站内内容
+ * 未登录读不到」，自己打自己。这一节的职责是**解释那些看起来像失败的数字**，
+ * 没有需要解释的数字，就不该占位置。
+ *
+ * 返回空字符串时会被 `renderMarkdownReport` 过滤掉，不会留下一个空标题。
+ */
+function siteLimitationSection(session: Session): string {
+  const docByUrl = new Map(session.documents.map((d) => [d.url, d]));
+  const tally = new Map<string, { results: number; withContent: number; errors: number }>();
+
+  for (const r of session.results) {
+    const t = tally.get(r.site) ?? { results: 0, withContent: 0, errors: 0 };
+    t.results++;
+    const doc = docByUrl.get(r.url);
+    if (doc) {
+      if (doc.extractMethod !== "raw") t.withContent++;
+      if (doc.error) t.errors++;
+    }
+    tally.set(r.site, t);
+  }
+
+  const rows = [...tally.entries()]
+    .filter(
+      ([site, t]) =>
+        Boolean(SITE_LIMITATION_NOTES[site]) && (t.errors > 0 || t.withContent < t.results),
+    )
+    .sort((a, b) => b[1].results - a[1].results);
+
+  if (rows.length === 0) return "";
+
+  const body = [
+    "## 站点抓取局限",
+    "",
+    "下面这些站点**拿不到正文是常态，不是故障**。列出来是为了让你不必去排查",
+    "一个不存在的问题 —— 本项目只访问公开页面，不逆向签名、不碰登录态。",
+    "",
+    "| 站点 | 本次拿到正文 | 说明 |",
+    "| --- | --- | --- |",
+  ];
+
+  for (const [site, t] of rows) {
+    body.push(
+      `| ${siteLabel(site)} | ${t.withContent}/${t.results} | ${escapeCell(SITE_LIMITATION_NOTES[site])} |`,
+    );
+  }
+
   return body.join("\n");
 }
 
