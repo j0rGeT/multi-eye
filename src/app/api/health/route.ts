@@ -28,12 +28,27 @@ export const dynamic = "force-dynamic";
  * 这里刻意**不启动浏览器**（理由见 `playwright.ts` 的 `isPlaywrightInstalled`），
  * 所以最后一种只说「已启用」，不谎称「已可用」。
  */
-function playwrightCheck(): { ok: boolean; detail: string; hint: string } {
+/**
+ * 三态里额外的 `state` 字段：**给机器读的那一份**。
+ *
+ * `detail` 是给用户看的中文，措辞随时会改；而 `examples/e2e.mjs` 要根据
+ * 「到底装没装」来决定这一步是硬断言还是跳过 —— 让它去匹配中文文案，
+ * 就把测试钉死在了文案上，改一个词就红。所以状态单独给一个稳定的枚举值。
+ */
+type PlaywrightState = "off" | "not-installed" | "ready";
+
+function playwrightCheck(): {
+  ok: boolean;
+  detail: string;
+  hint: string;
+  state: PlaywrightState;
+} {
   const mode = config.playwrightMode;
 
   if (mode === "off") {
     return {
       ok: false,
+      state: "off",
       detail: "已关闭（PLAYWRIGHT_MODE=off）",
       hint: "可选。关掉时 JS 空壳站点只能退化为搜索摘要；改成 on-demand 即可启用。",
     };
@@ -44,6 +59,7 @@ function playwrightCheck(): { ok: boolean; detail: string; hint: string } {
   if (!isPlaywrightInstalled()) {
     return {
       ok: false,
+      state: "not-installed",
       detail: `已启用但未安装（模式：${modeLabel}）`,
       hint:
         "装：pnpm add -D playwright && npx playwright install chromium" +
@@ -53,6 +69,7 @@ function playwrightCheck(): { ok: boolean; detail: string; hint: string } {
 
   return {
     ok: true,
+    state: "ready",
     detail: `已启用（模式：${modeLabel}）`,
     hint: "首次使用前需要 npx playwright install chromium 把浏览器二进制下下来。",
   };

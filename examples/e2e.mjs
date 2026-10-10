@@ -25,6 +25,7 @@
  * 退出码：0 全部通过（含「降级但可接受」），1 有断言失败。
  */
 
+import { createHash } from "node:crypto";
 import { readFile, readdir, rm, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -290,22 +291,33 @@ try {
     以前只有一个布尔值，于是「用户自己关掉的」和「开着但没装」在界面上一模一样，
     都是一句「未启用」—— 而这两件事该让用户做的事完全不同（前者不用管，后者要么
     装、要么忽略）。所以这里钉的是**措辞**：未安装时必须说「未安装」。
+
+    断言写成「state → 该说的那句话」的配对表，而不是「detail 里得有『未安装』」：
+    后者只在**没装**的机器上成立，而这条测试要在三种状态的机器上都跑得通 ——
+    它一装上 playwright 就自己红了（本轮实测：装上去之后这条报「已启用（模式：…）」）。
+    真正的意图从来不是「必须出现未安装」，而是**三个状态各有各的说法、且说法与
+    `state` 对得上**；写成配对表才是这个意图，而且比原来更强 —— 以后谁把两个
+    状态合并成一句话，这里立刻就红。
   */
   if (by.playwright) {
     const d = String(by.playwright.detail ?? "");
-    const saysMode = d.includes("模式：") || d.includes("PLAYWRIGHT_MODE=off");
+    const state = by.playwright.state;
+    const WORDING = {
+      off: "已关闭",
+      "not-installed": "未安装",
+      ready: "已启用",
+    };
     check(
       "健康检查",
       "Playwright 三态可读（关掉 / 没装 / 已启用 分别可辨）",
-      saysMode,
+      d.includes("模式：") || d.includes("PLAYWRIGHT_MODE=off"),
       d,
     );
-    // 「用户自己关掉的」和「开着但没装」不能都叫「未启用」
     check(
       "健康检查",
-      "「已关闭」与「未安装」措辞可辨（不是都叫「未启用」）",
-      d.includes("已关闭") || d.includes("未安装"),
-      d,
+      "state 与文案对得上（state=ready 就不能说「未启用」）",
+      Boolean(state) && WORDING[state] !== undefined && d.includes(WORDING[state]),
+      `state=${state} want=「${WORDING[state] ?? "（未知 state）"}」 got=${d}`,
     );
   }
 
@@ -1404,6 +1416,135 @@ try {
         `${fullBefore} → ${fullAfter}${fullAfter < fullBefore ? " —— 重抓把已经拿到的正文弄丢了" : ""}`,
       );
     }
+  }
+  // ── 10. 无头浏览器那条路 ────────────────────────────────
+  //
+  // 这一级此前**从来没有被执行过**：`ENABLE_PLAYWRIGHT` 默认 false 而
+  // node_modules 里也没有这个包，于是「疑似动态渲染 → 无头浏览器」永远为假，
+  // SPA 站点静默退化成摘要。P13.3 三态化之后它会自己生效，所以这里要真跑一次。
+  //
+  // 用**本机夹具**而不是某个真实 SPA 站点：真实站点的渲染取决于它的接口、
+  // 登录墙、反爬策略 —— 它们一变，红的是我们的测试，而不是我们的代码。
+  // 夹具是一个确定的 JS 空壳（静态 HTML 里 0 字正文，全部由脚本写入），
+  // 只要浏览器真的打开并执行了脚本，就必然拿到正文。
+  //
+  // 顺带钉住一个真 bug（本轮实测发现）：`shouldProxy()` 只认国内域名，
+  // 于是 `127.0.0.1` 被当成境外站点塞进代理，拿到的是代理的 502 页 ——
+  // 而那个错误页会被读成「渲染了但没有正文」。所以夹具走的是 loopback，
+  // 它一旦被代理，这一步就会红。
+  step("10. 无头浏览器渲染（本机 JS 空壳夹具）");
+
+  if (by.playwright?.state !== "ready") {
+    soft(
+      "无头浏览器",
+      "装好 playwright + chromium 才能验证这一级",
+      `当前状态：${by.playwright?.state ?? "未知"} · ${by.playwright?.detail ?? ""}`,
+    );
+  } else {
+    const { createServer } = await import("node:http");
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+
+    const MARKER = "脚本渲染出来的正文";
+    const fixtureHtml = `<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<title>夹具：前端渲染</title></head><body><div id="root"></div><script>
+setTimeout(function(){var p=[];for(var i=1;i<=12;i++){p.push('<p>第 '+i+' 段：知识拓扑把一批资料里的概念与关系摊开。这一段只存在于脚本渲染的结果里，静态 HTML 里没有它。</p>');}
+document.getElementById('root').innerHTML='<article><h1>${MARKER}</h1>'+p.join('')+'</article>';},50);
+</script></body></html>`;
+
+    const server = createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(fixtureHtml);
+    });
+    await new Promise((r) => server.listen(0, "127.0.0.1", r));
+    const port = server.address().port;
+    const fixtureUrl = `http://127.0.0.1:${port}/spa.html`;
+
+    // 会话用一个固定目录名，且 topic.id 与目录名一致 —— `saveSession` 是按
+    // topic.id 定位目录的，两者不一致会写到别的会话上去
+    const fixtureSession = "E2E-PWSPA";
+    const fixtureId = createHash("sha1").update(fixtureUrl).digest("hex").slice(0, 16);
+    const fixtureDir = join(ROOT, "data", "sessions", fixtureSession);
+    mkdirSync(join(fixtureDir, "assets"), { recursive: true });
+    writeFileSync(
+      join(fixtureDir, "session.json"),
+      JSON.stringify(
+        {
+          topic: {
+            id: fixtureSession,
+            query: "无头浏览器路径验证",
+            sites: ["web"],
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+          results: [
+            {
+              id: fixtureId,
+              title: "夹具：前端渲染的页面",
+              url: fixtureUrl,
+              snippet: "静态 HTML 里没有正文。",
+              domain: "127.0.0.1",
+              site: "web",
+              provider: "searxng",
+              rank: 1,
+              hitCount: 1,
+              sources: ["searxng"],
+            },
+          ],
+          documents: [],
+          providerLog: [],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    let fixtureDoc = null;
+    try {
+      await sse(
+        `${BASE}/api/fetch`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId: fixtureSession, resultIds: [fixtureId] }),
+        },
+        (ev) => {
+          if (ev.type === "doc") fixtureDoc = ev.doc;
+        },
+      );
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+
+    check(
+      "无头浏览器",
+      "真的用无头浏览器拿到了正文（extractMethod = playwright）",
+      fixtureDoc?.extractMethod === "playwright",
+      fixtureDoc
+        ? `${fixtureDoc.extractMethod} / ${fixtureDoc.wordCount} 字 / ${fixtureDoc.extractMs}ms` +
+          `${fixtureDoc.error ? ` / ${fixtureDoc.error}` : ""}`
+        : "没有收到 doc 事件",
+    );
+    check(
+      "无头浏览器",
+      "拿到的是脚本渲染出来的内容（静态 HTML 里没有它）",
+      typeof fixtureDoc?.text === "string" && fixtureDoc.text.includes(MARKER),
+      `${fixtureDoc?.text?.length ?? 0} 字`,
+    );
+    check(
+      "无头浏览器",
+      "这一篇没有降级、没有 error",
+      Boolean(fixtureDoc) && !fixtureDoc.error,
+      fixtureDoc?.error ?? "",
+    );
+
+    /*
+      夹具会话用完即删。它不是「产物」，是脚手架 —— 留着会出现在用户的
+      会话列表里（标题叫「无头浏览器路径验证」），下次打开界面得自己认一下
+      这是什么。失败时也不留：三条断言各自的 detail 里已经带着 extractMethod、
+      字数、error 原文，那才是排查要看的，一个 session.json 不比它多。
+    */
+    await rm(fixtureDir, { recursive: true, force: true });
   }
 } catch (err) {
   results.push({ step: "运行", name: "未捕获的异常", ok: false, detail: String(err) });

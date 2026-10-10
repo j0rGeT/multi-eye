@@ -62,10 +62,42 @@ export function isDomesticHost(hostname: string): boolean {
   return DOMESTIC_SUFFIXES.some((s) => h === s || h.endsWith(`.${s}`));
 }
 
-/** 这个 URL 该走代理吗。解析不出主机名时按原策略（走代理）处理。 */
+/**
+ * 本机 / 内网地址 —— 永远直连，任何情况下都不该塞进代理。
+ *
+ * 这条是**实测发现的**：本地起一个静态服务器（`127.0.0.1:8791`），走代理
+ * 拿到的是 `HTTP 502`，直连 200。原因是 `shouldProxy` 只问「是不是国内域名」，
+ * 而 IP 不在那份名单里，于是 loopback 被当成境外站点送了出去 —— 代理拿到
+ * `127.0.0.1:8791` 只能理解成**它自己那台机器**上的 8791，要么拒绝要么连错。
+ *
+ * 覆盖 127.0.0.0/8、10/8、172.16/12、192.168/16、169.254/16（链路本地）、
+ * IPv6 的 ::1 / fe80:: / fc00::、以及 `localhost` 与 `.local` / `.localhost`。
+ */
+export function isPrivateHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/\.$/, "").replace(/^\[|\]$/g, "");
+  if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local")) return true;
+  if (h === "::1" || h === "0.0.0.0") return true;
+  if (/^127\./.test(h)) return true;
+  if (/^10\./.test(h)) return true;
+  if (/^192\.168\./.test(h)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
+  if (/^169\.254\./.test(h)) return true;
+  if (/^fe80:/.test(h)) return true;
+  if (/^f[cd][0-9a-f]{0,2}:/.test(h)) return true;
+  return false;
+}
+
+/**
+ * 这个 URL 该走代理吗。
+ *
+ * 两种情况下直连：**国内站点**（代理出口在境外反而更慢或触发风控）和
+ * **本机 / 内网地址**（代理压根到不了，见 `isPrivateHost`）。
+ * 解析不出主机名时按原策略（走代理）处理。
+ */
 export function shouldProxy(url: string): boolean {
   try {
-    return !isDomesticHost(new URL(url).hostname);
+    const host = new URL(url).hostname;
+    return !(isDomesticHost(host) || isPrivateHost(host));
   } catch {
     return true;
   }

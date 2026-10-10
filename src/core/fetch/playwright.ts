@@ -12,6 +12,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import type { Browser } from "playwright";
 import { config } from "@/core/env";
+import { shouldProxy } from "@/core/net/domestic";
 
 /**
  * 用 createRequire 而不是 `await import("playwright")`。
@@ -26,33 +27,63 @@ import { config } from "@/core/env";
  */
 const requireFromRoot = createRequire(join(process.cwd(), "package.json"));
 
-let browserPromise: Promise<Browser | null> | undefined;
+/**
+ * 浏览器实例按「要不要走代理」各存一个。
+ *
+ * 为什么是**两个实例**而不是一个带 `bypass` 的实例：`bypass` 在这个组合上
+ * 根本不生效。实测（Playwright 1.51 + chromium 1161，本地静态服务器
+ * `127.0.0.1:8791`）：
+ *
+ *   proxy.bypass = "127.0.0.1"          → 没到（代理返回错误页）
+ *   proxy.bypass = "localhost,127.0.0.1" → 没到
+ *   proxy.bypass = "<-loopback>"         → 没到
+ *   proxy.bypass = "*"                   → 没到
+ *   --proxy-bypass-list 直给 args        → 没到
+ *   不配代理                             → 885 字，正常
+ *
+ * 连 `*` 都不生效，说明这不是匹配规则写错了，而是这条路走不通。于是回到
+ * 和 HTTP 层**同一个判据**：`shouldProxy(url)` 说不用代理的，就用一个
+ * 根本没配代理的浏览器。两处判断同源，不会再出现「HTTP 层直连、浏览器层
+ * 绕代理」这种两层不一致。
+ *
+ * 代价是可能同时存在两个 Chromium 进程（各约 100MB）。只有在一次抓取里
+ * 既有国内/本机页面又有境外页面时才会都起来，而那种情况本来就要两个实例
+ * 才能都对。
+ */
+const browsers = new Map<boolean, Promise<Browser | null>>();
 
-/** 单例浏览器。冷启动约 1 秒，复用后每次抓取只需新建 context。 */
-async function getBrowser(): Promise<Browser | null> {
-  if (config.playwrightMode === "off") return null;
+/** 冷启动约 1 秒，复用后每次抓取只需新建 context。 */
+function getBrowser(useProxy: boolean): Promise<Browser | null> {
+  if (config.playwrightMode === "off") return Promise.resolve(null);
 
-  browserPromise ??= (async () => {
-    try {
-      const { chromium } = requireFromRoot("playwright") as typeof import("playwright");
-      // 浏览器同样要走代理：无头浏览器绕不过网络可达性，境外站点直连会超时。
-      // 与 httpFetch 用同一个 config.fetchProxyUrl，两处行为保持一致。
-      const proxy = config.fetchProxyUrl.trim();
-      return await chromium.launch({
-        headless: true,
-        args: ["--disable-blink-features=AutomationControlled"],
-        ...(proxy ? { proxy: { server: proxy } } : {}),
-      });
-    } catch {
-      return null;
-    }
-  })();
+  let p = browsers.get(useProxy);
+  if (!p) {
+    p = launchBrowser(useProxy);
+    browsers.set(useProxy, p);
+  }
+  return p;
+}
 
-  return browserPromise;
+async function launchBrowser(useProxy: boolean): Promise<Browser | null> {
+  try {
+    const { chromium } = requireFromRoot("playwright") as typeof import("playwright");
+    // 境外站点必须走代理：无头浏览器绕不过网络可达性，直连会超时。
+    // 与 httpFetch 用同一个 config.fetchProxyUrl，两处行为保持一致。
+    const proxy = useProxy ? config.fetchProxyUrl.trim() : "";
+    return await chromium.launch({
+      headless: true,
+      args: ["--disable-blink-features=AutomationControlled"],
+      ...(proxy ? { proxy: { server: proxy } } : {}),
+    });
+  } catch {
+    return null;
+  }
 }
 
 export async function isPlaywrightAvailable(): Promise<boolean> {
-  return (await getBrowser()) !== null;
+  // 用不带代理的那个探活：`isPlaywrightAvailable` 回答的是「有没有可用的
+  // 浏览器二进制」，与代理通不通无关，而配了代理的实例要多一层无关变量。
+  return (await getBrowser(false)) !== null;
 }
 
 /**
@@ -115,7 +146,12 @@ export async function fetchWithBrowser(
   url: string,
   opts: { signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<BrowserFetchResult> {
-  const browser = await getBrowser();
+  /*
+    走不走代理**按这个 URL** 现算，与 HTTP 抓取层同一个 `shouldProxy`。
+    写死成「浏览器一律走代理」会让本地/国内页面拿到代理的错误页，
+    而那个错误页会被当成「渲染了但没正文」—— 一个查不出来的假故障。
+  */
+  const browser = await getBrowser(shouldProxy(url));
   if (!browser) {
     return { html: "", error: "Playwright 未启用或未安装" };
   }
@@ -177,9 +213,16 @@ export async function fetchWithBrowser(
   }
 }
 
-/** 进程退出时清理浏览器，避免留下孤儿 chromium 进程。 */
+/**
+ * 进程退出时清理浏览器，避免留下孤儿 chromium 进程。
+ *
+ * 两个实例都要关 —— 一次抓取里既有国内页面又有境外页面时它们都存在。
+ */
 export async function closeBrowser(): Promise<void> {
-  const b = await browserPromise?.catch(() => null);
-  await b?.close().catch(() => {});
-  browserPromise = undefined;
+  const pending = [...browsers.values()];
+  browsers.clear();
+  for (const p of pending) {
+    const b = await p.catch(() => null);
+    await b?.close().catch(() => {});
+  }
 }
