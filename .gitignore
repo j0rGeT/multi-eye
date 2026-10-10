@@ -2,6 +2,7 @@ node_modules/
 .next/
 out/
 build/
+release/
 
 # SearXNG 源码与虚拟环境（由 scripts/searxng-setup.sh 生成，不入库）
 .searxng/

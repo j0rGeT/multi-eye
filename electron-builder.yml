@@ -1,0 +1,29 @@
+appId: com.github.j0rGeT.muti-eye
+productName: muti-eye
+directories:
+  output: release
+files:
+  - package.json
+  - electron/**
+  - .next/**
+  - next.config.ts
+  - tsconfig.json
+  - config/**
+  - scripts/**
+  - node_modules/**
+asar: true
+asarUnpack:
+  - node_modules/jieba-wasm/**
+  - node_modules/sharp/**
+npmRebuild: false
+mac:
+  target:
+    - dmg
+  category: public.app-category.productivity
+win:
+  target:
+    - nsis
+linux:
+  target:
+    - AppImage
+  category: Office

@@ -62,6 +62,14 @@ const Verdicts = z.object({
       verdict: z
         .enum(["likely", "unlikely", "uncertain"])
         .describe("切题 / 不切题 / 拿不准。拿不准就用 uncertain，不要硬猜"),
+      score: z
+        .number()
+        .min(0)
+        .max(1)
+        .describe("与用户意图的关联度，0~1；不是内容质量或可信度"),
+      match: z
+        .enum(["direct", "related", "unclear"])
+        .describe("直接命中主题 / 只命中关联词 / 拿不准"),
       reason: z.string().describe("一句话说明依据，中文"),
     }),
   ),
@@ -74,6 +82,7 @@ const SYSTEM_PROMPT = [
   "**纪律：**",
   "- 你的任务是判断「这条是不是用户在找的东西」，**不是**判断「这条内容对不对、好不好」。",
   "  一条切题但质量差的内容，仍然应该判 likely。",
+  "- score 是与用户意图的关联度，不是质量分；match 要区分直接命中主题和只命中关联词。",
   "- **拿不准就判 uncertain。** 多标一条不相关的，代价是用户错过一份本来有用的资料；",
   "  少标一条，代价只是列表里多一条噪音。两害相权，宁可漏判。",
   "- 依据只看给你的标题、摘要和域名。不要凭常识补全没写出来的东西。",
@@ -90,6 +99,7 @@ function userPrompt(plan: SearchPlan, batch: SearchResult[]): string {
 
   return [
     `用户的原话（逐字）：${plan.raw}`,
+    plan.userIntent ? `用户意图提示（必须优先满足）：${plan.userIntent}` : "",
     `这句话的意思：${plan.intent}`,
     plan.entity.name ? `主题词：${plan.entity.name}` : "",
     plan.entity.aliases.length
@@ -97,6 +107,9 @@ function userPrompt(plan: SearchPlan, batch: SearchResult[]): string {
       : "",
     plan.disambiguators.length ? `限定词：${plan.disambiguators.join("、")}` : "",
     plan.negatives.length ? `应当排除的：${plan.negatives.join("、")}` : "",
+    plan.relatedTerms?.length
+      ? `关联技术词：${plan.relatedTerms.join("、")}`
+      : "",
     "",
     "结果列表（JSON）：",
     JSON.stringify(items),
@@ -149,6 +162,8 @@ export async function judgeRelevance(
         if (!r) continue;
         out.set(r.id, {
           verdict: v.verdict,
+          score: Math.max(0, Math.min(1, v.score)),
+          match: v.match,
           reason: v.reason.trim() || "模型未给出依据",
           source: "llm",
         });

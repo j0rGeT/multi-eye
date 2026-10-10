@@ -13,14 +13,14 @@
  *
  *     process.env.MUTI_EYE_DATA_DIR ?? path.join(process.cwd(), "data")
  *
- * 现在还不加这一句，因为那会引入一个「环境变量在模块加载时读一次」的时机
- * 问题，而当前没有任何使用方需要它。留这一条注释是为了下次改的时候不用重新
- * 找一遍 ── 下游（sessions / auth）全部从这里派生，没有任何调用点要动。
+ * Electron 启动时会在加载应用模块之前设置 `MUTI_EYE_DATA_DIR`，
+ * 所以这里可以安全地在模块加载时读一次。Web 启动不设置它，行为与旧版一致。
  */
 
 import path from "node:path";
 
-export const DATA_DIR = path.join(process.cwd(), "data");
+export const DATA_DIR =
+  process.env.MUTI_EYE_DATA_DIR?.trim() || path.join(process.cwd(), "data");
 
 export const SESSIONS_DIR = path.join(DATA_DIR, "sessions");
 

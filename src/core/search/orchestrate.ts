@@ -461,12 +461,24 @@ export async function searchAll(
     相关性判定放在**最后**，两个理由：
 
       1. 只为真正留下的那批付出代价 —— 时间筛掉的那些不必送模型
-      2. `kept` 已经是最终顺序，模型看到的顺序和用户看到的一致
+      2. `kept` 先按多源印证排序，模型看到的顺序就是用户先看到的顺序
 
-    顺序不能反过来：`filterByTime` 不读 relevance，而 rankResults 若是读了，
-    「默认排序 = 多源印证优先」这条核心主张就被悄悄改掉了。判定只贴标签。
+    判定完成后再做一次**仅 tie-breaker 的重排**：印证数仍然优先，
+    关联度只在印证数和上游排名相同的情况下决定先后。
   */
-  const results = await annotateRelevance(kept, plan, signal);
+  const annotated = await annotateRelevance(kept, plan, signal);
+  /*
+    关联度判定完成后，把默认排序再跑一遍。
+
+    `rankResults` 在没有 relevance 时仍然是原来的多源印证优先；拿到分数后，
+    只把它作为同印证数、同上游排名之间的 tie-breaker，不推翻“多源优先”。
+    这样 `DeepSeek-V4-Flash` 与只提到 `KVCache` 的关联资料都能按贴近程度靠前，
+    同时不会让一条单源结果压过被多个入口共同命中的核心资料。
+  */
+  const results =
+    sortMode === "relevant" || sortMode === undefined
+      ? rankResults(annotated, "relevant")
+      : annotated;
 
   return { results, log: allLogs, timeFilter: { dropped, unknown } };
 }
@@ -537,6 +549,7 @@ export function rankResults(
    */
   const byEvidence = (a: SearchResult, b: SearchResult) =>
     b.hitCount - a.hitCount ||
+    relevanceScore(b) - relevanceScore(a) ||
     a.rank - b.rank ||
     normalizeUrl(a.url).localeCompare(normalizeUrl(b.url));
 
@@ -600,6 +613,11 @@ export function rankResults(
   };
 
   return arr.sort((a, b) => score(b) - score(a) || byEvidence(a, b));
+}
+
+/** 关联度只在“印证数相同”时生效；没有分数的旧结果按 0 处理。 */
+function relevanceScore(r: SearchResult): number {
+  return r.relevance?.score ?? 0;
 }
 
 /**

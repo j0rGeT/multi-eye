@@ -54,6 +54,11 @@ const PLAN_MAX_TOKENS = Number(process.env.PLAN_MAX_TOKENS ?? 4_096);
  */
 const PlanSchema = z.object({
   intent: z.string().describe("一句话说明用户想查什么，不要复述原词"),
+  relatedTerms: z
+    .array(z.string())
+    .describe(
+      "与主题紧密相关的技术词/概念词，例如 DeepSeek-V4-Flash 的 KVCache；最多 8 个，不要编造",
+    ),
   entity: z.object({
     name: z.string().describe("最能代表主题的专有名词；没有明确实体就填空字符串"),
     aliases: z
@@ -93,6 +98,8 @@ const SYSTEM_PROMPT = [
   SHAPE_HINT,
   "",
   "分析要求：",
+  "- 用户意图提示是**硬约束**：它不是可选的润色，而是这次检索要保证满足的目标。" +
+    "variants 与 relatedTerms 必须优先围绕它展开。",
   "- **entity.name 是最关键的一项。** 它要是主题里那个专有名词（产品名、型号、技术名、公司名），" +
     "因为后续要靠它判断一条搜索结果切不切题。主题就是一个普通概念（如「露营装备」）时，" +
     "把整个主题填进去即可。",
@@ -102,6 +109,9 @@ const SYSTEM_PROMPT = [
   "- disambiguators 用来把主题和同名事物分开；negatives 列出同名但明显不是用户想要的。",
   "- variants 按站点分别给查询词：视频站（B 站 / YouTube）偏向完整的产品名或教程标题，" +
     "问答站（知乎）偏向「怎么用 / 是什么 / 对比」这类问句，代码站（GitHub）偏向仓库名或技术名。",
+  "- relatedTerms 只放和 entity 紧密相连、能帮助找到关联资料的技术词。" +
+    "例如查询 DeepSeek-V4-Flash 且用户关心推理优化时，可以给 KVCache、显存、推理吞吐；" +
+    "不要放泛泛的「AI」「模型」，也不要放同名但无关的领域。",
   "- **variants 里只写查询词本身**，不要写「site:xxx.com」，也不要写站点名 —— " +
     "那部分由调用方追加，写进来会重复。",
   "- **拿不准就不要改写。** 某个站点想不出更合适的查询词，就把它填成和原主题一样。" +
@@ -109,9 +119,10 @@ const SYSTEM_PROMPT = [
   "- 不要凭空编造原主题里没有的品牌、型号、年份。",
 ].join("\n");
 
-function userPrompt(raw: string, sites: SiteKey[]): string {
+function userPrompt(raw: string, sites: SiteKey[], userIntent?: string): string {
   return [
     `调研主题（用户原话）：${raw}`,
+    userIntent ? `用户意图提示（必须满足）：${userIntent}` : "",
     "",
     `将要检索的站点：${sites.join("、")}`,
     "",
@@ -128,13 +139,14 @@ function userPrompt(raw: string, sites: SiteKey[]): string {
 export async function planQueries(
   raw: string,
   sites: SiteKey[],
-  opts: { signal?: AbortSignal } = {},
+  opts: { signal?: AbortSignal; intent?: string } = {},
 ): Promise<SearchPlan> {
+  const userIntent = opts.intent?.trim() || undefined;
   if (!hasLLM()) {
-    return lexicalPlan(raw, "未配置 LLM_API_KEY");
+    return lexicalPlan(raw, "未配置 LLM_API_KEY", userIntent);
   }
   if (sites.length === 0) {
-    return lexicalPlan(raw, "没有选中任何站点");
+    return lexicalPlan(raw, "没有选中任何站点", userIntent);
   }
 
   /*
@@ -153,7 +165,7 @@ export async function planQueries(
       PlanSchema,
       [
         { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userPrompt(raw, sites) },
+        { role: "user", content: userPrompt(raw, sites, userIntent) },
       ],
       /*
         同时给出 `timeoutMs`：`signal` 是「整个分析」的截止时间，`timeoutMs` 是
@@ -166,7 +178,9 @@ export async function planQueries(
 
     return {
       raw,
+      userIntent,
       intent: parsed.intent.trim() || raw,
+      relatedTerms: clean(parsed.relatedTerms),
       entity: {
         name: parsed.entity.name.trim(),
         aliases: clean(parsed.entity.aliases),
@@ -177,7 +191,11 @@ export async function planQueries(
       source: "llm",
     };
   } catch (err) {
-    return lexicalPlan(raw, err instanceof Error ? err.message : String(err));
+    return lexicalPlan(
+      raw,
+      err instanceof Error ? err.message : String(err),
+      userIntent,
+    );
   }
 }
 
@@ -189,7 +207,26 @@ export async function planQueries(
  */
 export function variantFor(plan: SearchPlan, site: SiteKey): string {
   const v = plan.variants[site]?.trim();
-  return v || plan.raw;
+  const base = v || plan.raw;
+  const clauses: string[] = [base];
+
+  // 意图提示始终参与真实查询，即使分析失败或模型忘了把它写进 variants。
+  const intent = plan.userIntent?.trim();
+  if (intent && !base.toLowerCase().includes(intent.toLowerCase())) {
+    clauses.push(intent);
+  }
+
+  /*
+   * 关联词用 OR 追加，而不是 AND：用户要找的是“这个主题的关联技术”，
+   * 只写 `DeepSeek-V4-Flash KVCache` 会把没有同时出现两者的资料全部挡掉。
+   * 相关性判定会在结果回来后再按关联度排序，宁可多捞几条再筛。
+   */
+  const related = (plan.relatedTerms ?? []).filter((term) => term.trim());
+  if (related.length > 0) {
+    clauses.push(`(${related.slice(0, 4).map((term) => `"${term.trim()}"`).join(" OR ")})`);
+  }
+
+  return clauses.join(" ");
 }
 
 /**
@@ -198,16 +235,23 @@ export function variantFor(plan: SearchPlan, site: SiteKey): string {
  * `variants` 留空而不是填满原话：留空让 `variantFor` 走同一条回退路径，
  * 少一处「填了但填的是原值」的中间状态。
  */
-export function lexicalPlan(raw: string, reason: string): SearchPlan {
+export function lexicalPlan(
+  raw: string,
+  reason: string,
+  userIntent?: string,
+): SearchPlan {
+  const intent = userIntent?.trim();
   return {
     raw,
-    intent: raw,
+    userIntent: intent || undefined,
+    intent: intent ? `${raw}；${intent}` : raw,
     // 原话就是这里的实体名。它不完美（原话可能是一整句话），但相关性判定
     // 的判据是「判别性 token 一个都不出现」，一整句话同样能用 ——
     // 只是比 LLM 给的那个更容易漏判，而漏判（不标记）正是安全的方向。
     entity: { name: raw, aliases: [] },
     disambiguators: [],
     negatives: [],
+    relatedTerms: [],
     variants: {},
     source: "lexical",
     fallbackReason: reason,

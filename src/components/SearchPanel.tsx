@@ -51,6 +51,9 @@ const SORT_HELP: Record<SortMode, string> = {
 export interface SearchPanelProps {
   query: string;
   onQueryChange: (q: string) => void;
+  /** 关键词之外的用户意图提示。空串表示不填。 */
+  intent: string;
+  onIntentChange: (value: string) => void;
   sites: SiteKey[];
   onToggleSite: (s: SiteKey) => void;
   onSearch: () => void;
@@ -79,6 +82,8 @@ export interface SearchPanelProps {
 
   documents: Document[];
   onFetch: () => void;
+  /** 点击已抓取资料时打开本地预览（Markdown / 视频）。 */
+  onPreviewDocument: (doc: Document) => void;
   fetching: boolean;
   fetchProgress: { done: number; total: number } | null;
   /**
@@ -99,10 +104,10 @@ export interface SearchPanelProps {
 
 export default function SearchPanel(props: SearchPanelProps) {
   const {
-    query, onQueryChange, sites, onToggleSite, onSearch, searching,
+    query, onQueryChange, intent, onIntentChange, sites, onToggleSite, onSearch, searching,
     timeRange, onTimeRangeChange, sortMode, onSortModeChange, timeFilter,
     plan, results, logs, siteCounts,
-    documents, onFetch, fetching, fetchProgress, fetchNotice,
+    documents, onFetch, onPreviewDocument, fetching, fetchProgress, fetchNotice,
     onBuildGraph, building, graphError, graphNotice, hasGraph,
   } = props;
 
@@ -115,7 +120,22 @@ export default function SearchPanel(props: SearchPanelProps) {
     import 了 `@/core/env`（读 process.env、引 node 内置模块），客户端组件引不
     进来。规则只有一行，这里照搬 —— **改一边必须同时改另一边**。
   */
-  const queryFor = (s: SiteKey) => plan?.variants[s]?.trim() || plan?.raw || "";
+  const queryFor = (s: SiteKey) => {
+    if (!plan) return "";
+    const base = plan.variants[s]?.trim() || plan.raw;
+    const clauses = [base];
+    const userIntent = plan.userIntent?.trim();
+    if (userIntent && !base.toLowerCase().includes(userIntent.toLowerCase())) {
+      clauses.push(userIntent);
+    }
+    const related = (plan.relatedTerms ?? []).filter((term) => term.trim());
+    if (related.length > 0) {
+      clauses.push(
+        `(${related.slice(0, 4).map((term) => `"${term.trim()}"`).join(" OR ")})`,
+      );
+    }
+    return clauses.join(" ");
+  };
 
   /**
    * 真正被改写过查询词的站点。
@@ -125,8 +145,7 @@ export default function SearchPanel(props: SearchPanelProps) {
    */
   const rewritten = plan
     ? allSites.filter((s) => {
-        const v = plan.variants[s]?.trim();
-        return Boolean(v) && v !== plan.raw;
+        return queryFor(s) !== plan.raw;
       })
     : [];
 
@@ -154,6 +173,27 @@ export default function SearchPanel(props: SearchPanelProps) {
             {searching ? "搜索中…" : "搜索"}
           </button>
         </div>
+
+        <label style={{ display: "block", marginTop: 10 }}>
+          <span className="dim" style={{ fontSize: 11 }}>
+            用户意图提示（可选）
+          </span>
+          <textarea
+            className="input"
+            style={{
+              display: "block",
+              width: "100%",
+              minHeight: 54,
+              marginTop: 4,
+              resize: "vertical",
+              lineHeight: 1.45,
+            }}
+            placeholder="例如：只关注推理阶段的 KVCache、显存优化和实际吞吐，排除招聘与股价信息"
+            value={intent}
+            onChange={(e) => onIntentChange(e.target.value)}
+            disabled={searching}
+          />
+        </label>
 
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
           {allSites.map((s) => {
@@ -250,9 +290,23 @@ export default function SearchPanel(props: SearchPanelProps) {
         <div className="panel" style={{ padding: 14 }}>
           <h2>搜索词分析</h2>
 
+          {plan.userIntent && (
+            <div style={{ fontSize: 12, marginBottom: 6 }}>
+              <span className="dim">用户意图：</span>
+              {plan.userIntent}
+            </div>
+          )}
+
+          {(plan.relatedTerms ?? []).length > 0 && (
+            <div style={{ fontSize: 12, marginBottom: 6 }}>
+              <span className="dim">关联检索词：</span>
+              {(plan.relatedTerms ?? []).join("、")}
+            </div>
+          )}
+
           {plan.source === "lexical" ? (
             <p className="dim" style={{ fontSize: 12, margin: 0 }}>
-              未做模型分析（{plan.fallbackReason ?? "未知原因"}），各站点按你的原话检索。
+              未做模型分析（{plan.fallbackReason ?? "未知原因"}），各站点按你的原话与意图提示检索。
             </p>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12 }}>
@@ -292,7 +346,7 @@ export default function SearchPanel(props: SearchPanelProps) {
           {rewritten.length > 0 && (
             <div style={{ marginTop: 10, fontSize: 12 }}>
               <div className="dim" style={{ marginBottom: 4 }}>
-                各站点改写的查询词（其余站点按原话检索）：
+                各站点实际发出的查询词（含意图与关联词）：
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                 {rewritten.map((s) => (
@@ -448,6 +502,7 @@ export default function SearchPanel(props: SearchPanelProps) {
           results={results}
           documents={documents}
           timeFilter={timeFilter}
+          onPreviewDocument={onPreviewDocument}
         />
       )}
     </div>
@@ -468,10 +523,12 @@ function ResultList({
   results,
   documents,
   timeFilter,
+  onPreviewDocument,
 }: {
   results: SearchResult[];
   documents: Document[];
   timeFilter: { dropped: number; unknown: number } | null;
+  onPreviewDocument: (doc: Document) => void;
 }) {
   const docByUrl = new Map(documents.map((d) => [d.url, d]));
   // 把 duplicateOf 的 id 还原成标题，用于「与《X》同源」的提示
@@ -682,6 +739,13 @@ function ResultList({
                     href={r.url}
                     target="_blank"
                     rel="noreferrer"
+                    onClick={(event) => {
+                      if (!doc) return;
+                      // 已抓到正文的条目先看本地预览；原文链接仍保留在预览面板里。
+                      event.preventDefault();
+                      onPreviewDocument(doc);
+                    }}
+                    title={doc ? "点击预览已抓取内容；原文链接在预览面板中" : "打开原文"}
                     style={{
                       display: "block",
                       padding: "8px 10px",
@@ -705,6 +769,14 @@ function ResultList({
                       }}
                     >
                       <span>{r.domain}</span>
+                      {r.relevance?.score !== undefined && (
+                        <span
+                          title={`与用户意图的关联度：${r.relevance.reason}`}
+                          style={{ color: "var(--accent)" }}
+                        >
+                          · 关联 {Math.round(r.relevance.score * 100)}%
+                        </span>
+                      )}
                       {/*
                         有发布日期才显示时间，没有就什么都不显示。
 

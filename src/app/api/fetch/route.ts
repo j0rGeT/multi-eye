@@ -7,6 +7,8 @@ import type {
   SiteKey,
 } from "@/core/types";
 import { extractMany } from "@/core/fetch/extract";
+import { filterFetchCandidates } from "@/core/fetch/quality";
+import { config } from "@/core/env";
 import { findDuplicates, markDuplicates } from "@/core/search/dedupe";
 import { loadSession, saveSession } from "@/core/store";
 import { sseResponse } from "@/core/sse";
@@ -60,7 +62,10 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: `会话不存在：${sessionId}` }, { status: 404 });
   }
 
-  const { targets, skippedIrrelevant } = pickTargets(session.results, body);
+  const { targets, skippedIrrelevant, skippedLowQuality } = pickTargets(
+    session.results,
+    body,
+  );
 
   return sseResponse<FetchEvent>(async (emit) => {
     emit({
@@ -68,6 +73,7 @@ export async function POST(req: NextRequest) {
       total: targets.length,
       skipped: session.results.length - targets.length,
       skippedIrrelevant,
+      skippedLowQuality,
     });
 
     if (targets.length === 0) {
@@ -76,6 +82,7 @@ export async function POST(req: NextRequest) {
         sessionId,
         documents: session.documents.length,
         byMethod: tally(session.documents),
+        filteredLowQuality: skippedLowQuality,
       });
       return;
     }
@@ -127,6 +134,7 @@ export async function POST(req: NextRequest) {
       sessionId,
       documents: marked.length,
       byMethod: tally(marked),
+      filteredLowQuality: skippedLowQuality,
     });
   }, req.signal);
 }
@@ -151,7 +159,11 @@ export async function POST(req: NextRequest) {
 function pickTargets(
   results: SearchResult[],
   body: FetchBody,
-): { targets: SearchResult[]; skippedIrrelevant: number } {
+): {
+  targets: SearchResult[];
+  skippedIrrelevant: number;
+  skippedLowQuality: number;
+} {
   let picked: SearchResult[];
   if (body.resultIds?.length) {
     // 显式点名的不筛 —— 用户点了这几条，他的意图优先于任何自动判断
@@ -164,12 +176,24 @@ function pickTargets(
     picked = results;
   }
 
-  if (body.includeIrrelevant || body.resultIds?.length) {
-    return { targets: picked, skippedIrrelevant: 0 };
+  if (body.resultIds?.length) {
+    // 用户点名的链接不经过质量闸门：他的明确选择优先于任何自动规则。
+    return { targets: picked, skippedIrrelevant: 0, skippedLowQuality: 0 };
   }
 
-  const targets = picked.filter((r) => r.relevance?.verdict !== "unlikely");
-  return { targets, skippedIrrelevant: picked.length - targets.length };
+  const relevant = body.includeIrrelevant
+    ? picked
+    : picked.filter((r) => r.relevance?.verdict !== "unlikely");
+  const skippedIrrelevant = picked.length - relevant.length;
+  const quality = filterFetchCandidates(relevant, {
+    minTargets: config.fetchMinTargets,
+  });
+
+  return {
+    targets: quality.targets,
+    skippedIrrelevant,
+    skippedLowQuality: quality.skippedLowQuality,
+  };
 }
 
 /**

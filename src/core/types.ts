@@ -95,6 +95,13 @@ export interface SearchQuery {
 export interface SearchPlan {
   /** 用户原话，逐字保留。 */
   raw: string;
+  /**
+   * 用户额外填写的意图提示，逐字保留。
+   *
+   * 与 `raw` 分开存：关键词是“搜什么”，意图提示是“为什么搜、要看哪些方面”。
+   * 合成一个字段后，刷新页面就没法把两者分别展示，也没法在分析失败时仍原样带回去。
+   */
+  userIntent?: string;
   /** 一句话说明这次要查什么。 */
   intent: string;
   /** 最能代表主题的专有名词与它的其他写法。`name` 为空串表示没有明确实体。 */
@@ -103,6 +110,13 @@ export interface SearchPlan {
   disambiguators: string[];
   /** 应当排除的主题，如「招聘」「股价」。 */
   negatives: string[];
+  /**
+   * 与主题紧密相关的技术词/概念词，例如查 `DeepSeek-V4-Flash` 时的 `KVCache`。
+   *
+   * 这些词不是替代主题，而是用于扩展检索和关联度排序的线索。旧分析结果没有
+   * 这个字段，所以读取方必须允许它缺失。
+   */
+  relatedTerms?: string[];
   /**
    * 站点 → 针对该站点改写后的**查询正文**。
    *
@@ -134,8 +148,8 @@ export type RelevanceVerdict = "likely" | "unlikely" | "uncertain";
  * 一个不切题的结果完全可能是对的（只是不是你要的）。所以：
  *
  *   - 绝不拿它去改 `bodyGrade`，也绝不合成任何「综合评分」
- *   - **只标记，不删除**（延续「绝不静默丢东西」）—— 排序仍由 `rankResults` 决定，
- *     一行都不动。默认排序「多源印证优先」是这套系统的核心主张，换掉它得由用户自己决定
+ *   - **不删除**（延续「绝不静默丢东西」）—— 排序仍由 `rankResults` 决定。
+ *     关联度只做同印证数下的 tie-breaker，默认的「多源印证优先」不变。
  */
 export interface Relevance {
   verdict: RelevanceVerdict;
@@ -143,6 +157,14 @@ export interface Relevance {
   reason: string;
   /** 这一判是谁给的。`lexical` 是本地规则（可复现），`llm` 是模型批量判定。 */
   source: "lexical" | "llm";
+  /**
+   * 关联度 0~1。它回答“这条资料和用户意图有多贴近”，**不是内容质量或可信度**。
+   *
+   * 允许缺失：旧会话里的判定没有这个字段，缺失时调用方按未量化处理。
+   */
+  score?: number;
+  /** 命中方式：直接命中主题、只命中关联词，还是拿不准。 */
+  match?: "direct" | "related" | "unclear";
 }
 
 /**
@@ -205,7 +227,7 @@ export interface SearchResult {
   /** 上游给的客观指标。没有就是 undefined —— 不编造，也不填 0。 */
   signals?: ResultSignal[];
   /**
-   * 是否切题。只标记，不删除，也不参与排序。
+   * 是否切题。不删除；关联度分数只在 `rankResults` 里做同印证数的 tie-breaker。
    *
    * 可选：旧会话没有这个字段，读取方必须把 `undefined` 当「**未判定**」——
    * 绝不当成 `unlikely`。把「没测过」读成「测出来是坏的」是最容易犯、
@@ -277,6 +299,8 @@ export interface Document {
   author?: string;
   publishedAt?: string;
   images: DocImage[];
+  /** 上游给出的封面/缩略图，视频预览优先使用它。 */
+  thumbnail?: string;
   wordCount: number;
   extractMethod: ExtractMethod;
   extractMs: number;
@@ -382,6 +406,8 @@ export interface GraphBuilder {
 export interface Topic {
   id: string;
   query: string;
+  /** 用户额外填写的意图提示。旧会话没有该字段。 */
+  intent?: string;
   sites: SiteKey[];
   createdAt: string;
   updatedAt: string;
@@ -411,6 +437,8 @@ export interface SessionViewState {
 export interface SearchOptions {
   timeRange?: TimeRange;
   sortMode?: SortMode;
+  /** 本次搜索的用户意图提示。 */
+  intent?: string;
 }
 
 /** 一次搜索会话的完整快照，落盘为 data/sessions/<id>/session.json。 */
@@ -432,6 +460,8 @@ export interface Session {
   createdAt?: string;
   /** 本次搜索的时效口径。旧会话没有，按「未筛未排」处理。 */
   searchOptions?: SearchOptions;
+  /** 本次搜索的查询分析。旧会话没有该字段，恢复时按“未分析”处理。 */
+  plan?: SearchPlan;
 }
 
 export interface ProviderLogEntry {
@@ -525,8 +555,8 @@ export type SearchEvent =
        * 早就该显示了。界面先出列表、徽章随后补上，比让用户对着空列表等
        * 更接近这套系统一贯的做法（能先给的先给）。
        *
-       * **只标记，不删除。** 收到这个事件的界面不该拿它去过滤掉任何东西 ——
-       * 排序仍然完全由 `rankResults` 决定。
+       * **不删除。** 收到这个事件的界面不该拿它去过滤掉任何东西 ——
+       * 排序仍然由 `rankResults` 决定，关联度只做同印证数下的 tie-breaker。
        */
       verdicts: Record<string, Relevance>;
     }
@@ -563,6 +593,8 @@ export type FetchEvent =
        * 决定，**必须说出来**，否则用户只会觉得「抓取少了几条，是不是坏了」。
        */
       skippedIrrelevant: number;
+      /** 因明显的无用/低质候选规则被过滤的条数。 */
+      skippedLowQuality?: number;
     }
   | { type: "doc"; doc: Document; done: number; total: number }
   | {
@@ -571,5 +603,7 @@ export type FetchEvent =
       documents: number;
       /** 各降级档位的命中数，直接暴露「有多少篇其实只拿到了摘要」。 */
       byMethod: Record<ExtractMethod, number>;
+      /** 本轮质量闸门过滤掉的候选数，便于界面明确告知。 */
+      filteredLowQuality?: number;
     }
   | { type: "error"; message: string };

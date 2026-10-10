@@ -82,10 +82,10 @@ function judgeText(r: SearchResult): string {
  *
  * 判定顺序（顺序本身是判据的一部分）：
  *
- *   1. 没有拉丁词根 → `uncertain`（弃权）。中文主题走这条：中文没有词边界，
+ *   1. 没有拉丁词根、也没有关联词 → `uncertain`（弃权）。中文主题走这条：中文没有词边界，
  *      整名匹配太严、片段匹配太松 —— 实测「露营装备」整名匹配会把 55 条里的
  *      48 条（含 "Camping Gear Guide" 这种明显切题的）判成不相关。**弃权是正确的。**
- *   2. 文本里没有词根 → `unlikely`。**这是唯一会标「不相关」的情形。**
+ *   2. 文本里没有词根、也没有关联词 → `unlikely`。**这是唯一会标「不相关」的情形。**
  *   3. 命中了 negatives → `uncertain`，**不是** `unlikely`。
  *      模型给的 negatives 里混着「兄弟型号」（实测把 `DeepSeek-V3`、`DeepSeek-R1`
  *      也列了进去），而「V3 对比 V4.1」这种结果同时含实体和 negative ——
@@ -94,22 +94,29 @@ function judgeText(r: SearchResult): string {
  */
 export function lexicalRelevance(r: SearchResult, plan: SearchPlan): Relevance {
   const head = latinHead(plan);
+  const text = judgeText(r);
+  const related = (plan.relatedTerms ?? []).filter((term) => {
+    const normalized = term.trim().toLowerCase();
+    return normalized.length > 0 && text.includes(normalized);
+  });
 
-  if (!head) {
+  if (!head && related.length === 0) {
     return {
       verdict: "uncertain",
       reason: "主题里没有拉丁词根，本地规则不适用（中文没有词边界，硬匹配会误杀）",
       source: "lexical",
+      score: 0.5,
+      match: "unclear",
     };
   }
 
-  const text = judgeText(r);
-
-  if (!text.includes(head)) {
+  if (head && !text.includes(head) && related.length === 0) {
     return {
       verdict: "unlikely",
       reason: `标题与摘要里都没有出现「${head}」`,
       source: "lexical",
+      score: 0.05,
+      match: "unclear",
     };
   }
 
@@ -122,10 +129,28 @@ export function lexicalRelevance(r: SearchResult, plan: SearchPlan): Relevance {
       verdict: "uncertain",
       reason: `提到了可能要排除的「${negative}」`,
       source: "lexical",
+      score: 0.35,
+      match: "unclear",
     };
   }
 
-  return { verdict: "likely", reason: `出现了「${head}」`, source: "lexical" };
+  if (related.length > 0 && (!head || !text.includes(head))) {
+    return {
+      verdict: "likely",
+      reason: `命中关联词「${related.join("、")}」`,
+      source: "lexical",
+      score: Math.min(0.85, 0.55 + related.length * 0.1),
+      match: "related",
+    };
+  }
+
+  return {
+    verdict: "likely",
+    reason: `出现了「${head}」`,
+    source: "lexical",
+    score: 0.9,
+    match: "direct",
+  };
 }
 
 /**
@@ -147,12 +172,30 @@ export function mergeRelevance(a: Relevance, b: Relevance): Relevance {
     return a.verdict === "unlikely" ? a : b;
   }
   if (a.verdict === b.verdict) {
-    return a.source === "llm" ? a : b.source === "llm" ? b : a;
+    const preferred = a.source === "llm" ? a : b.source === "llm" ? b : a;
+    const scores = [a.score, b.score].filter(
+      (score): score is number => typeof score === "number",
+    );
+    return {
+      ...preferred,
+      ...(scores.length > 0 ? { score: Math.max(...scores) } : {}),
+      match: preferred.match ?? (a.match ?? b.match),
+    };
   }
   return {
     verdict: "uncertain",
     reason: `本地规则与模型判断不一致（${a.reason} / ${b.reason}）`,
     source: a.source === "llm" ? a.source : b.source,
+    ...([a.score, b.score].some((score) => typeof score === "number")
+      ? {
+          score: Math.max(
+            ...[a.score, b.score].filter(
+              (score): score is number => typeof score === "number",
+            ),
+          ),
+        }
+      : {}),
+    match: a.match === "related" || b.match === "related" ? "related" : "unclear",
   };
 }
 

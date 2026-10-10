@@ -88,11 +88,21 @@ export async function extractMany(
 
   let done = 0;
   const tasks = results.map((r) =>
-    gate(async () => {
-      const doc = await extractOne(r, opts.signal, budget);
-      done += 1;
-      opts.onProgress?.(done, results.length, doc);
-      return doc;
+    gate(() => {
+      /*
+        知乎单独串行：它的风控对并发很敏感，四路同时打开会显著增加 412/403。
+        其它站点仍走全局并发，避免因为一个平台把整批抓取拖慢。
+      */
+      const siteGate = limiter(
+        `extract:${r.site}`,
+        r.site === "zhihu" ? 1 : concurrency,
+      );
+      return siteGate(async () => {
+        const doc = await extractOne(r, opts.signal, budget);
+        done += 1;
+        opts.onProgress?.(done, results.length, doc);
+        return doc;
+      });
     }),
   );
 
@@ -309,7 +319,13 @@ export async function extractOne(
     const wantsBrowser =
       config.playwrightMode === "always" ||
       (config.playwrightMode === "on-demand" &&
-        looksLikeSpa(res.body, extraction));
+        (looksLikeSpa(res.body, extraction) ||
+          /*
+            知乎的静态 HTML 即便不是典型 SPA 空壳，也常只给一段被截断的
+            回答预览。正文容器一旦过短就直接走浏览器，用登录态拿完整正文；
+            这条额外判据只对知乎生效，不改变其它站点的降级成本。
+          */
+          (result.site === "zhihu" && extraction.thin)));
 
     if (wantsBrowser && (await isPlaywrightAvailable())) {
       if (!takePlaywrightSlot(budget)) {
@@ -403,6 +419,7 @@ interface DocParts {
   markdown: string;
   title: string;
   images?: Document["images"];
+  thumbnail?: string;
   author?: string;
   publishedAt?: string;
   lang?: Document["lang"];
@@ -438,6 +455,7 @@ function buildDoc(r: SearchResult, p: DocParts): Document {
     author: p.author ?? r.author,
     publishedAt: p.publishedAt ?? r.publishedAt,
     images: p.images ?? [],
+    thumbnail: p.thumbnail ?? r.thumbnail,
     /**
      * 连同标题一起计。构图时启发式的语料是 `` `${doc.title}。${doc.text}` ``，
      * 图的门槛（`wordCount >= 30`）理应按同一份语料来量 —— 否则 B 站那种

@@ -91,6 +91,8 @@ pnpm example:docs  <sessionId>               # 逐篇抓取结果与降级原因
 | `PLAYWRIGHT_MODE` | `on-demand` | 无头浏览器降级：`off` / `on-demand`（仅 JS 空壳页）/ `always`（每篇都渲染） |
 | `PLAYWRIGHT_MAX_PAGES_PER_RUN` | `8` | 一轮抓取最多用几次无头浏览器，超额不静默丢弃 |
 | `FETCH_TIMEOUT_MS` / `FETCH_MAX_BYTES` | 15s / 5MB | 单页抓取的上限 |
+| `FETCH_MIN_TARGETS` | `8` | 质量过滤后至少保留的候选数，过严时自动补回低质链接 |
+| `SEARCH_PER_SITE_LIMIT` | `30` | 每站点候选上限，给过滤层留出余量 |
 | `DOWNLOAD_CONCURRENCY` | `3` | 下载队列并发 |
 
 ### LLM 构图是可选的
@@ -113,6 +115,11 @@ pnpm example:docs  <sessionId>               # 逐篇抓取结果与降级原因
 
 `SearchProvider` 适配器按链降级：`Serper? → SearXNG → yt-dlp（YouTube 专用）`。
 
+关键词之外还可以填写**用户意图提示**。它会原样进入查询分析、查询改写和相关性判定；
+例如搜 `DeepSeek-V4-Flash` 时填“关注推理阶段的 KVCache 与显存优化”，分析会提取
+`KVCache` 等关联词，用 OR 扩展检索，再按与意图的关联度排序。关联度只表示“贴不贴题”，
+不表示内容质量或可信度。
+
 ### 抓取层：先分派「视频还是图文」，再分级降级
 
 第一步是**按 URL 路径**判类型（`src/core/kind.ts`），而不是按站点 —— 因为 B 站的专栏（`/read/`）和图文（`/opus/`）抓到的是**真正文**，按站点判会把它们当成视频，于是去给一篇没有播放器的文章找字幕、排媒体下载、并放进包里的 `视频/`。
@@ -130,10 +137,18 @@ pnpm example:docs  <sessionId>               # 逐篇抓取结果与降级原因
 
 **单篇失败不抛异常**，只产出带 `error` 的 Document —— 一个主题下几十篇资料，其中几篇抓不到是常态（站点下线、反爬拦截、内容被删），不该让整批失败。
 
+抓取前还有一层**质量闸门**：导航页、登录页、验证码页、空标题等明显无用候选先被挡掉，
+候选不足时按排名补回低质链接，避免“全部过滤、整轮空跑”。抓取后仍由 `bodyGrade`
+区分完整正文、短文和只有摘要的退化结果，界面会把跳过数量说清楚。
+
 两条站点专用通道值得单说，因为**页面抓取在这两家产出的是垃圾而不是内容**：
 
 - **YouTube**：观看页 HTML 里没有正文，只有 `var ytInitialPlayerResponse = {...}`。Readability 会把它当正文抓出几万字的 JS 源码，比抓不到还糟。
 - **B站**：页面抓出来的是站内导航 + 侧栏的「接下来播放」推荐列表 —— 一千多字里没有一个是这个视频的内容，而几十篇这样的资料叠在一起，TF-IDF 里「首页/番剧/会员购/点赞」的权重会高到离谱。
+
+知乎另有专用正文容器提取：优先取 `.RichContent-inner` / `.QuestionAnswer-content` /
+`.Post-RichText` 中最长的真实正文，剔除操作按钮与评论区；正文过短时强制走带登录态的
+Playwright，并将知乎抓取并发限制为 1，避免风控把整批请求打成 412/403。
 
 B站通道走 `api.bilibili.com` 的公开接口，**不需要登录、不需要签名**（wbi 签名是给播放地址那类接口用的，元数据接口不用）。它返回的是视频自己的东西；视频被删除时也会明确告诉你 `code=62002 稿件不可见`，而不是给你一段别人的视频标题。
 
@@ -215,6 +230,9 @@ data/sessions/<id>/           运行时产物（gitignore）
 
 ## 下载
 
+抓取到的文章可在结果列表或拓扑详情中点击打开**本地 Markdown 预览**；视频会优先使用
+YouTube/B 站官方播放器内嵌预览，无法安全内嵌的站点会显示封面并保留原文链接。
+
 `queue.ts` 是一个带状态机的并发队列，任务落盘在 `data/sessions/<id>/tasks.json`：
 
 - **进程重启能续跑**，已完成的任务按文件存在性跳过（目录类任务看 `.done` 标记）
@@ -258,6 +276,9 @@ data/sessions/<id>/           运行时产物（gitignore）
 pnpm dev            # 开发服务器
 pnpm build          # 生产构建
 pnpm typecheck      # tsc --noEmit
+pnpm desktop        # 构建后启动 Electron 桌面壳
+pnpm desktop:dev    # Electron 连接本地开发/未构建服务
+pnpm desktop:pack   # 生成 release/ 下的桌面安装包
 
 pnpm example        # 全链路验证（需 dev 已启动）
 pnpm example:graph  # 看某次会话的拓扑

@@ -121,6 +121,31 @@ export function extractWithReadability(
   const images = collectImages(doc, url);
   const lang = detectLang(doc);
 
+  /*
+    知乎优先走站点选择器。
+
+    知乎的回答/专栏正文都有稳定容器，而通用 Readability 在页面上遇到推荐流、
+    评论区和“展开全部”按钮时，可能把侧栏当成主体。先取最长的真实正文容器，
+    只有它不够长时才回落到通用路径；这样登录态、短回答和长文都能走同一条链。
+  */
+  const selected = extractSiteContainer(doc, url);
+  if (selected) {
+    const selectedText = cleanText(selected.textContent ?? "");
+    if (selectedText.length >= THIN_THRESHOLD) {
+      return {
+        title: doc.title?.trim() || selected.getAttribute("data-title") || "",
+        text: selectedText,
+        markdown: htmlToMarkdown(selected.outerHTML, url),
+        images,
+        excerpt: selectedText.slice(0, 200),
+        byline: selectedAuthor(doc),
+        publishedAt: metaDate,
+        lang,
+        thin: false,
+      };
+    }
+  }
+
   let title = doc.title?.trim() ?? "";
   let text = "";
   let markdown = "";
@@ -178,6 +203,59 @@ export function extractWithReadability(
     lang,
     thin: text.length < THIN_THRESHOLD,
   };
+}
+
+/**
+ * 站点专用正文容器。
+ *
+ * 只返回**确实像正文**的最长候选：知乎页面里同时存在问题标题、回答正文、
+ * 推荐回答和评论区，按“第一个匹配”取会稳定抓错。候选文本低于阈值时返回
+ * null，把决定权交还给通用 Readability。
+ */
+function extractSiteContainer(doc: Document, url: string): Element | null {
+  let host = "";
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+  if (!/(^|\.)zhihu\.com$/.test(host)) return null;
+
+  const selectors = [
+    ".RichContent-inner",
+    ".QuestionAnswer-content",
+    ".Post-RichText",
+    ".RichText.ztext",
+  ];
+  let best: Element | null = null;
+  let bestLength = 0;
+
+  for (const selector of selectors) {
+    for (const candidate of doc.querySelectorAll(selector)) {
+      const clone = candidate.cloneNode(true) as Element;
+      for (const noise of clone.querySelectorAll(
+        ".ContentItem-actions, .RichContent-actions, .Post-Sub, " +
+          ".AnswerItem-extraInfo, .Comment-list, button, form",
+      )) {
+        noise.remove();
+      }
+      const length = (clone.textContent ?? "").trim().length;
+      if (length > bestLength) {
+        best = clone;
+        bestLength = length;
+      }
+    }
+  }
+
+  return bestLength >= THIN_THRESHOLD ? best : null;
+}
+
+function selectedAuthor(doc: Document): string | undefined {
+  return (
+    doc.querySelector(".AuthorInfo-name, .UserLink-author")?.textContent?.trim() ||
+    doc.querySelector('meta[name="author"]')?.getAttribute("content")?.trim() ||
+    undefined
+  );
 }
 
 /**

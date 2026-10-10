@@ -21,6 +21,8 @@ export const maxDuration = 300;
 
 interface SearchBody {
   query?: string;
+  /** 用户在关键词之外填写的意图提示，作为检索的硬约束。 */
+  intent?: string;
   sites?: SiteKey[];
   domain?: string;
   timeRange?: string;
@@ -70,10 +72,12 @@ export async function POST(req: NextRequest) {
   );
   const timeRange = pickTimeRange(body.timeRange);
   const sortMode = pickSortMode(body.sortMode);
+  const intent = body.intent?.trim() || undefined;
 
   const topic: Topic = {
     id: newTopicId(),
     query,
+    intent,
     sites,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -91,7 +95,7 @@ export async function POST(req: NextRequest) {
       分析失败/超时/没配 LLM 都会退化成「不改写」（见 plan.ts），
       此时 queries 与加这个功能之前逐字相同。
     */
-    const plan = await planQueries(query, sites, { signal: req.signal });
+    const plan = await planQueries(query, sites, { signal: req.signal, intent });
 
     emit({
       type: "plan",
@@ -135,7 +139,8 @@ export async function POST(req: NextRequest) {
       createdAt: new Date().toISOString(),
       // 把当时的口径一起存下来，否则事后没法解释「为什么这次搜出来的资料
       // 比上次少一大截」—— 可能只是当时勾了「一周内」
-      searchOptions: { timeRange, sortMode },
+      searchOptions: { timeRange, sortMode, intent },
+      plan,
     };
     await saveSession(session);
 

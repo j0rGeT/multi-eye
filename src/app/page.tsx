@@ -34,9 +34,11 @@ import SearchPanel from "@/components/SearchPanel";
 import GraphView from "@/components/graph/GraphView";
 import NodeDetail from "@/components/NodeDetail";
 import DownloadPanel from "@/components/DownloadPanel";
+import DocumentPreview from "@/components/DocumentPreview";
 
 export default function Home() {
   const [query, setQuery] = useState("");
+  const [intent, setIntent] = useState("");
   const [sites, setSites] = useState<SiteKey[]>(DEFAULT_SITES);
   const [timeRange, setTimeRange] = useState<TimeRange | "">("");
   const [sortMode, setSortMode] = useState<SortMode>("relevant");
@@ -75,6 +77,8 @@ export default function Home() {
   /** 构图成功、但有几篇没进图时的说明（与 graphError 互斥）。 */
   const [graphNotice, setGraphNotice] = useState<string | null>(null);
   const [selected, setSelected] = useState<GraphNode | null>(null);
+  /** 当前打开的资料预览。文章走 Markdown，视频走平台播放器。 */
+  const [previewDocument, setPreviewDocument] = useState<Document | null>(null);
   const [showDocuments, setShowDocuments] = useState(true);
 
   /**
@@ -117,12 +121,14 @@ export default function Home() {
         if (cancelled || startedRef.current) return;
 
         setQuery(session.topic.query);
+        setIntent(session.topic.intent ?? session.searchOptions?.intent ?? "");
         setSites(session.topic.sites);
         // 还原当时的检索口径。旧会话没有这两个字段（那时还没这功能），
         // 回退到「不限 / 印证优先」，也就是它的结果本来就是按这个口径出的
         setTimeRange(session.searchOptions?.timeRange ?? "");
         setSortMode(session.searchOptions?.sortMode ?? "relevant");
         setSearchedAt(session.createdAt ?? session.topic.createdAt ?? null);
+        setPlan(session.plan ?? null);
         setResults(session.results);
         setDocuments(session.documents);
         setLogs(session.providerLog);
@@ -197,6 +203,7 @@ export default function Home() {
         "/api/search",
         {
           query: query.trim(),
+          intent: intent.trim() || undefined,
           sites,
           // 空串表示不限，服务端不认这个值，这里先归一成 undefined
           timeRange: timeRange || undefined,
@@ -246,7 +253,7 @@ export default function Home() {
     } finally {
       setSearching(false);
     }
-  }, [query, sites, searching, timeRange, sortMode]);
+  }, [query, intent, sites, searching, timeRange, sortMode]);
 
   // ── 抓取 ──
   /**
@@ -271,6 +278,7 @@ export default function Home() {
     // plan 事件给「跳过了几条不相关的」，done 事件才有「渲染了几篇」——
     // 两条提示要能同时出现，所以这里把前一半先记下来，到 done 时一起合成
     let skippedIrrelevant = 0;
+    let skippedLowQuality = 0;
 
     try {
       await postSse<FetchEvent>(
@@ -281,7 +289,10 @@ export default function Home() {
             case "plan":
               setFetchProgress({ done: 0, total: e.total });
               skippedIrrelevant = e.skippedIrrelevant;
-              setFetchNotice(fetchNoticeText(skippedIrrelevant, 0));
+              skippedLowQuality = e.skippedLowQuality ?? 0;
+              setFetchNotice(
+                fetchNoticeText(skippedIrrelevant, skippedLowQuality, 0),
+              );
               break;
             case "doc":
               setFetchProgress({ done: e.done, total: e.total });
@@ -292,7 +303,11 @@ export default function Home() {
               break;
             case "done":
               setFetchNotice(
-                fetchNoticeText(skippedIrrelevant, e.byMethod.playwright),
+                fetchNoticeText(
+                  skippedIrrelevant,
+                  skippedLowQuality,
+                  e.byMethod.playwright,
+                ),
               );
               break;
             case "error":
@@ -491,6 +506,8 @@ export default function Home() {
             <SearchPanel
               query={query}
               onQueryChange={setQuery}
+              intent={intent}
+              onIntentChange={setIntent}
               sites={sites}
               timeRange={timeRange}
               onTimeRangeChange={setTimeRange}
@@ -508,6 +525,7 @@ export default function Home() {
               // 包一层：SearchPanel 把这个回调直接挂在 onClick 上，
               // 不包的话 React 会把 MouseEvent 当成 resultIds 传进去
               onFetch={() => runFetch()}
+              onPreviewDocument={setPreviewDocument}
               fetching={fetching}
               fetchProgress={fetchProgress}
               fetchNotice={fetchNotice}
@@ -571,7 +589,7 @@ export default function Home() {
                   graph={graph}
                   documents={documents}
                   onOpenDocument={(doc) =>
-                    window.open(doc.url, "_blank", "noreferrer")
+                    setPreviewDocument(doc)
                   }
                 />
               ) : (
@@ -597,6 +615,13 @@ export default function Home() {
               refetching={fetching}
             />
           </div>
+        )}
+
+        {previewDocument && (
+          <DocumentPreview
+            document={previewDocument}
+            onClose={() => setPreviewDocument(null)}
+          />
         )}
 
         {searchError && (
@@ -652,7 +677,11 @@ function errText(err: unknown): string {
  * 措辞用「本次会话」而不是「这一批」：`byMethod` 统计的是 `session.documents`，
  * 是累计值（`fetch/route.ts` 的 `tally`），说成这一批就是错的。
  */
-function fetchNoticeText(skippedIrrelevant: number, playwright: number): string | null {
+function fetchNoticeText(
+  skippedIrrelevant: number,
+  skippedLowQuality: number,
+  playwright: number,
+): string | null {
   const parts: string[] = [];
   if (skippedIrrelevant > 0) {
     parts.push(
@@ -662,6 +691,11 @@ function fetchNoticeText(skippedIrrelevant: number, playwright: number): string 
   }
   if (playwright > 0) {
     parts.push(`本次会话已有 ${playwright} 篇靠无头浏览器渲染拿到正文`);
+  }
+  if (skippedLowQuality > 0) {
+    parts.push(
+      `质量过滤层已跳过 ${skippedLowQuality} 条明显无用/低质候选（候选不足时会自动补回低质链接）`,
+    );
   }
   return parts.length ? parts.join("；") : null;
 }

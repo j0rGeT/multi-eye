@@ -129,22 +129,26 @@ export const config = {
       | linux                    | 13           | 3 条                 |
       | python asyncio           | 20           | 10 条                |
 
-    也就是说：用户那个具体查询本来就只有 10 条可拿，**提到 20 对它毫无帮助** ——
-    它的问题是「拿到的这 10 条里有 7 条不切题」，那是 P12.3 相关性判定要解决的，
-    不是条数问题。提条数只对宽泛主题（能拿到 11~20 条的那类）有效。
+    也就是说：用户那个具体查询本来就只有 10 条可拿，**提到 30 对它毫无帮助** ——
+    它的问题是「拿到的这 10 条里有 7 条不切题」，那是相关性判定要解决的，
+    不是条数问题。提条数主要给质量过滤层留候选余量。
 
     另一条已实测排掉的路线：**多页抓取**。SearXNG 的 `pageno=2/3` 在上面三个查询
     （含 `linux` 这种极常见的词）上一律返回 **0 条**，所以「翻页凑够 40 条」在这套
     引擎组合下走不通，不要再往那个方向试。
   */
-  searchPerSiteLimit: Number(process.env.SEARCH_PER_SITE_LIMIT ?? 20),
+  /*
+    每站点候选上限。上游常见的一页是 20 条，但 GitHub/RSS 等源能给更多；
+    质量闸门会在抓取前再筛一轮，所以这里宁可多拿候选，也不要让过滤后无料可抓。
+   */
+  searchPerSiteLimit: Number(process.env.SEARCH_PER_SITE_LIMIT ?? 30),
   /**
    * 链上某条 provider 拿到这么多条就不再往链下游走（短路，见 orchestrate.ts 的
-   * `ENOUGH_RESULTS`）。**保持 4 不要动**：它管的是「还要不要多打一次付费 provider」，
-   * 调高会让每次搜索都为一点边际覆盖多付一次钱，而且多出来的结果正好是相关性判定
-   * 要标的那批噪音。
+   * `ENOUGH_RESULTS`）。默认从 4 提到 8，是为了给质量闸门留出候选余量：
+   * 过滤掉导航/短摘要后仍能剩下一批可抓资料。配了 Serper 的用户如果在意费用，
+   * 可以用 SEARCH_ENOUGH_RESULTS=4 恢复旧策略。
    */
-  searchEnoughResults: Number(process.env.SEARCH_ENOUGH_RESULTS ?? 4),
+  searchEnoughResults: Number(process.env.SEARCH_ENOUGH_RESULTS ?? 8),
   searchYoutubeLimit: Number(process.env.SEARCH_YOUTUBE_LIMIT ?? 20),
   searchBilibiliLimit: Number(process.env.SEARCH_BILIBILI_LIMIT ?? 20),
   /**
@@ -154,17 +158,22 @@ export const config = {
    * GitHub 走的是官方 API（有速率限制），RSS 是直接拉别人的 feed。混在一个数里
    * 会让调其中一个必然误伤另一个。
    *
-   * 当前值与原写死值一致 —— 这一轮只是把它们挪进 config，不改默认行为。
+   * 默认值在引入质量闸门时一起上调，给过滤层留出候选余量。
    */
   searchTopicLimit: {
-    hackernews: Number(process.env.SEARCH_HN_LIMIT ?? 15),
-    github: Number(process.env.SEARCH_GITHUB_LIMIT ?? 10),
-    arxiv: Number(process.env.SEARCH_ARXIV_LIMIT ?? 10),
-    rss: Number(process.env.SEARCH_RSS_LIMIT ?? 20),
+    hackernews: Number(process.env.SEARCH_HN_LIMIT ?? 20),
+    github: Number(process.env.SEARCH_GITHUB_LIMIT ?? 15),
+    arxiv: Number(process.env.SEARCH_ARXIV_LIMIT ?? 15),
+    rss: Number(process.env.SEARCH_RSS_LIMIT ?? 30),
   } as Record<string, number>,
 
   fetchTimeoutMs: Number(process.env.FETCH_TIMEOUT_MS ?? 15_000),
   fetchMaxBytes: Number(process.env.FETCH_MAX_BYTES ?? 5 * 1024 * 1024),
+  /**
+   * 质量闸门至少保留多少候选。过滤规则过严时，宁可补回低质候选，
+   * 也不让一轮抓取因为“全部被过滤”而空跑。
+   */
+  fetchMinTargets: Number(process.env.FETCH_MIN_TARGETS ?? 8),
   downloadConcurrency: Number(process.env.DOWNLOAD_CONCURRENCY ?? 3),
 
   /**
