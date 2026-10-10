@@ -82,6 +82,18 @@ function playwrightCheck(): {
  * 大部分故障都是配置问题（SearXNG 没起、json 格式没开、yt-dlp 没装），
  * 直接告诉用户怎么办比抛一个 500 有用得多。
  */
+/** `/api/health` 里的一条依赖检查。界面与 e2e 都按 `label` 显示它。 */
+interface HealthCheck {
+  id: string;
+  label: string;
+  /** 必需的挂了就算整体不健康；可选项缺失不影响可用。 */
+  required: boolean;
+  ok: boolean;
+  detail: string;
+  /** 修复建议。没有建议的项可以不写 —— 但 `label` 不能没有。 */
+  hint?: string;
+}
+
 export async function GET() {
   const [searxng, ytdlp, proxy] = await Promise.all([
     checkSearxng(),
@@ -107,13 +119,18 @@ export async function GET() {
             }`,
   };
 
-  const checks = [
+  /*
+    显式标类型，不是多余的：数组字面量的类型是各元素推断出来的联合，`label`
+    因此变成可选 —— 少写一个 `label` 编译器不会吭声，只会在响应里多一条
+    `label: undefined`（rss 那一项就是这么漏的）。标上之后这类遗漏是编译错误。
+  */
+  const checks: HealthCheck[] = [
     {
       id: "searxng",
       label: "SearXNG 搜索",
       required: true,
       ok: searxng.ok,
-      detail: searxng.ok ? config.searxngUrl : searxng.error,
+      detail: searxng.ok ? config.searxngUrl : (searxng.error ?? "SearXNG 未就绪"),
       hint: searxng.hint,
     },
     {
@@ -201,6 +218,12 @@ export async function GET() {
     },
     {
       id: "rss",
+      /*
+        这一项此前漏了 label，于是 `/api/health` 返回一条 label 为 undefined 的
+        check —— e2e 的健康检查那一屏会直接打印出「undefined — 6 条启用」。
+        不影响功能，但任何按 label 渲染的地方都会出现一行空白。
+      */
+      label: "RSS 订阅",
       /*
         RSS 是唯一一个**可用性会真的变化**的主题源，所以它必须真去读订阅表，
         不能像上面三个那样跟着 proxy 走。
