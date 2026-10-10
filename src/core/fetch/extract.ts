@@ -32,6 +32,7 @@ import { fetchHtml } from "./http";
 import { extractWithReadability, looksLikeCode, looksLikeSpa } from "./readability";
 import { boilerplateReason } from "./boilerplate";
 import { knownLimitation } from "./limitations";
+import { loggedInFor } from "@/core/auth/store";
 import { contentKind } from "@/core/kind";
 import { fetchWithBrowser, isPlaywrightAvailable } from "./playwright";
 import { fetchTranscript, isYoutubeUrl } from "./youtube";
@@ -61,6 +62,17 @@ export interface ExtractOptions {
  */
 export interface ExtractBudget {
   playwrightLeft: number;
+  /**
+   * 这一轮里，用户对哪些站点是**登录着的**（`core/auth/store.ts`）。
+   *
+   * 只影响错误文案：同样是知乎 403，「去登录一次」和「你登录过期了，重新扫码」
+   * 是给用户的两种完全不同的指令（见 `limitations.ts` 里知乎那两段）。
+   *
+   * 一轮读一次、放进预算里跟着走，而不是每篇去问一次 —— 一次抓取里同一篇
+   * 站点的失败往往是同一个原因，问一遍就够了；而且这样 `fallbackDocument`
+   * 不必变成 async。
+   */
+  loggedIn: Record<string, boolean>;
 }
 
 export async function extractMany(
@@ -71,6 +83,7 @@ export async function extractMany(
   const gate = limiter("extract", concurrency);
   const budget: ExtractBudget = {
     playwrightLeft: config.playwrightMaxPagesPerRun,
+    loggedIn: await loggedInFor(results.map((r) => r.site)),
   };
 
   let done = 0;
@@ -86,9 +99,12 @@ export async function extractMany(
   // 用 allSettled 而不是 all：即使某个任务因为意外抛出，其他文档也要保住
   const settled = await Promise.allSettled(tasks);
   return settled.map((s, i) =>
-    s.status === "fulfilled" ? s.value : fallbackDocument(results[i], String(s.reason)),
+    s.status === "fulfilled"
+      ? s.value
+      : fallbackDocument(results[i], String(s.reason), undefined, {}, budget),
   );
 }
+
 
 /** 扣一个无头浏览器名额。扣不到返回 false —— 由调用方写进降级原因。 */
 function takePlaywrightSlot(budget: ExtractBudget | undefined): boolean {
@@ -144,9 +160,13 @@ export async function extractOne(
      */
     // 兜底文档也带上日期：没有字幕不代表不知道这个视频什么时候发的，
     // 而「发布日期」正是判断一条资料该不该采信时效性的前提
-    return fallbackDocument(result, tr.error ?? "该视频没有可用字幕", t0, {
-      publishedAt: tr.publishedAt ?? result.publishedAt,
-    });
+    return fallbackDocument(
+      result,
+      tr.error ?? "该视频没有可用字幕",
+      t0,
+      { publishedAt: tr.publishedAt ?? result.publishedAt },
+      budget,
+    );
   }
 
   // ── 二级：B站视频接口 ──
@@ -178,9 +198,13 @@ export async function extractOne(
      * 推荐列表（导航 + 别人的视频标题），一千多字里没有一个是这个视频的内容。
      * 抓不到正文时退回搜索摘要，比拿一段别的东西冒充正文诚实得多。
      */
-    return fallbackDocument(result, bv.error ?? "B站接口未返回可用内容", t0, {
-      publishedAt: bv.publishedAt ?? result.publishedAt,
-    });
+    return fallbackDocument(
+      result,
+      bv.error ?? "B站接口未返回可用内容",
+      t0,
+      { publishedAt: bv.publishedAt ?? result.publishedAt },
+      budget,
+    );
   }
 
   /**
@@ -204,6 +228,8 @@ export async function extractOne(
       result,
       "该 B 站页面类型没有正文可抓（仅视频页 / 专栏 / 图文有）",
       t0,
+      {},
+      budget,
     );
   }
 
@@ -223,6 +249,8 @@ export async function extractOne(
         result,
         "正文疑似为脚本或内联数据，已丢弃",
         t0,
+        {},
+        budget,
       );
     }
 
@@ -362,6 +390,8 @@ export async function extractOne(
     // 配额或没装而没走成，那个原因比笼统的「未能提取到正文」有用得多
     browserSkip ?? res.error ?? "未能提取到正文",
     t0,
+    {},
+    budget,
   );
 }
 
@@ -446,6 +476,7 @@ function fallbackDocument(
   error: string,
   startedAt = Date.now(),
   extra: { publishedAt?: string } = {},
+  budget?: ExtractBudget,
 ): Document {
   return buildDoc(r, {
     method: "raw",
@@ -454,7 +485,8 @@ function fallbackDocument(
     title: r.title,
     publishedAt: extra.publishedAt,
     startedAt,
-    error: knownLimitation(r.site, error) ?? error,
+    error:
+      knownLimitation(r.site, error, { loggedIn: budget?.loggedIn?.[r.site] }) ?? error,
   });
 }
 

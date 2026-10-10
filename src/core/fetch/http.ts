@@ -8,9 +8,26 @@
  * 关于代理：统一走 agent.ts 里的 httpFetch —— Node 的全局 fetch 不读
  * 代理环境变量，而本机的 VPN 出口有时是唯一可达路径（境外站点）。
  * 代理地址由 config.fetchProxyUrl 控制，置空即直连。
+ *
+ * ── 关于登录态 cookie（P14）──
+ *
+ * **只有这里和 `playwright.ts` 会带 cookie**，这是刻意的：
+ *
+ *   - `agent.ts` 的 `httpFetch` 是更底层的网络原语，搜索结果 provider、LLM
+ *     调用都从它走。凭证的注入点放在那一层的话，`grep Cookie` 就再也说不清
+ *     「到底哪些请求带着你的身份出去了」。
+ *   - `http.ts` 这两个函数（`fetchHtml` / `fetchBinary`）才是「以你的身份读
+ *     一个公开页面」这件事本身。
+ *
+ * 发给谁是 `core/auth/cookies.ts` 里那张表说了算（目前只有 zhihu.com 及其子域），
+ * 别的站点一个字节都拿不到。
+ *
+ * 实测：undici 与 Node 全局 fetch 都允许手动设 `Cookie` 头（浏览器里它是禁止
+ * 头，所以这个组合是量过的，不是想当然）。
  */
 
 import { config } from "@/core/env";
+import { cookieHeaderFor } from "@/core/auth/store";
 import { httpFetch } from "./agent";
 
 export interface HttpResult {
@@ -40,6 +57,9 @@ export async function fetchHtml(
   opts.signal?.addEventListener("abort", onAbort, { once: true });
 
   try {
+    // 只有 `core/auth/cookies.ts` 那张表里的站点、且用户真的登录过，才有值
+    const cookie = await cookieHeaderFor(url);
+
     const res = await httpFetch(url, {
       redirect: "follow",
       signal: controller.signal,
@@ -49,6 +69,7 @@ export async function fetchHtml(
           "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         "Cache-Control": "no-cache",
+        ...(cookie ? { Cookie: cookie } : {}),
       },
     });
 
@@ -138,7 +159,14 @@ async function readCapped(
   return { text: new TextDecoder("utf-8").decode(merged), truncated };
 }
 
-/** 下载二进制资源（图片等），返回 Buffer 与内容类型。 */
+/**
+ * 下载二进制资源（图片等），返回 Buffer 与内容类型。
+ *
+ * **刻意不带 cookie**：表里那些站点的图片/视频都在独立 CDN 上
+ * （知乎是 `*.zhimg.com`），`accountSiteFor` 本来就不会匹配到它们。
+ * 而「每一个能把你的凭证发出去的地方」都是要单独审一遍的，所以这条边界
+ * 画在 HTML 那一侧 —— 真的遇到同域二进制资源被 403 挡住，再加一行也不迟。
+ */
 export async function fetchBinary(
   url: string,
   opts: { signal?: AbortSignal; timeoutMs?: number; maxBytes?: number } = {},

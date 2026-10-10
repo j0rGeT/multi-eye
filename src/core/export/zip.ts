@@ -46,6 +46,7 @@ import { isPackageWorthy, whyNotPackaged } from "@/core/quality";
 import { fileStem } from "@/core/download/kinds";
 import { DOC_KIND_LABELS, docKind, packageDirFor } from "@/core/kind";
 import { isKnownLimitation } from "@/core/fetch/limitations";
+import { loggedInFor } from "@/core/auth/store";
 import { renderMarkdownReport, reportFileName } from "./markdown";
 import { renderDocMarkdown, renderDocTranscript } from "./docmarkdown";
 
@@ -99,7 +100,18 @@ export async function buildPackage(
     files[path] = encoder.encode(text);
   };
 
-  putText("报告.md", renderMarkdownReport(session, { now }));
+  putText(
+    "报告.md",
+    renderMarkdownReport(session, {
+      now,
+      /*
+        「站点抓取局限」那一节的话跟着登录态变（没登录 → 催你去登录；登录了还
+        403 → 催你重新扫码），所以打包时现问一次。问的是**这份会话里出现过的
+        站点**，不是全量清单。
+      */
+      loggedIn: await loggedInFor(session.results.map((r) => r.site)),
+    }),
+  );
 
   for (const doc of included) {
     const stem = fileStem(doc);
@@ -266,8 +278,10 @@ function renderExcluded(
   if (limited.length > 0) {
     out.push(`## 已知的站点限制 —— ${limited.length} 篇`, "");
     out.push(
-      "> 这些**不是故障**：站点本身就对未登录的访问返回 403 / 风控页。本项目不逆向签名、",
-      "> 不碰登录态，所以只能拿到搜索摘要。换代理、改配置都不会变 —— 详情见报告里的「站点抓取局限」一节。",
+      "> 这些**不是故障**：站点本身就对未登录的访问返回 403 / 风控页。本项目不逆向",
+      "> 任何签名算法。知乎的正文需要登录态 —— 在界面的「知乎账号」里用你自己的账号",
+      "> 扫码即可（cookie 只存本机，不入库）。换代理、改配置都不会变 —— 详情见报告里",
+      "> 的「站点抓取局限」一节。",
       "",
     );
     for (const d of limited) out.push(bullet(d));

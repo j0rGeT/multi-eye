@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { renderMarkdownReport, reportFileName } from "@/core/export/markdown";
 import { loadSession, writeReport } from "@/core/store";
+import { loggedInFor } from "@/core/auth/store";
 
 // 不导出 runtime：Next 16 里 'nodejs' 已是默认值（Edge 废弃），文档要求移除该导出。
 export const dynamic = "force-dynamic";
@@ -42,6 +43,8 @@ export async function GET(req: NextRequest) {
     now,
     includeMermaid: params.get("mermaid") !== "0",
     includeUrls: params.get("urls") !== "0",
+    // 「站点抓取局限」那一节的措辞跟着登录态变，所以要现问一次
+    loggedIn: await loggedInFor(session.results.map((r) => r.site)),
   });
 
   // 落盘失败不该让下载也失败：文件系统的问题（磁盘满、权限）与「把报告交给

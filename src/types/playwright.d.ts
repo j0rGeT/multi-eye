@@ -33,9 +33,24 @@ declare module "playwright" {
     close(): Promise<void>;
   }
 
+  /** 与 playwright 官方 `Cookie` 对齐的那几个字段（见 core/auth/cookies.ts）。 */
+  export interface CookieParam {
+    name: string;
+    value: string;
+    domain?: string;
+    path?: string;
+    /** Unix 秒。 */
+    expires?: number;
+    httpOnly?: boolean;
+    secure?: boolean;
+    sameSite?: "Strict" | "Lax" | "None";
+  }
+
   export interface BrowserContext {
     route(url: string, handler: (route: Route) => unknown): Promise<void>;
     newPage(): Promise<Page>;
+    /** 把登录态灌进上下文（见 fetch/playwright.ts 里为什么不用改请求头那条路）。 */
+    addCookies(cookies: readonly CookieParam[]): Promise<void>;
     close(): Promise<void>;
   }
 

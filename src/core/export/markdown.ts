@@ -16,7 +16,7 @@
 import type { DocKind, Document, GraphModel, SearchResult, Session } from "@/core/types";
 import { DOC_KIND_LABELS, contentKind, docKind } from "@/core/kind";
 import { siteLabel } from "@/core/search/sites";
-import { SITE_LIMITATION_NOTES } from "@/core/fetch/limitations";
+import { siteLimitationNote } from "@/core/fetch/limitations";
 import { SORT_LABELS, TIME_RANGE_LABELS } from "@/core/search/filter";
 import { dateCoverage, dateSpan, formatDate, formatDateTime, formatSpan } from "@/core/time";
 import { BODY_GRADE_LABELS, bodyGrade, qualitySummary } from "@/core/quality";
@@ -37,6 +37,15 @@ export interface MarkdownOptions {
   includeMermaid?: boolean;
   /** 是否带上站点的原始链接。默认带上。 */
   includeUrls?: boolean;
+  /**
+   * 用户对哪些站点是登录着的（`core/auth/store.ts` 的 `loggedInFor`）。
+   *
+   * 只有「站点抓取局限」那一节用它，但那一节的话**必须说对**：没登录时知乎
+   * 该催他去登录，登录了还 403 该催他重新扫码。渲染函数拿不到 DOM 也发不了
+   * 请求，所以这个事实只能由调用方传进来 —— 默认空对象当「都没登录」，
+   * 这是保守的那一边（不会让报告声称一件没发生的事）。
+   */
+  loggedIn?: Record<string, boolean>;
 }
 
 export function renderMarkdownReport(
@@ -77,7 +86,7 @@ export function renderMarkdownReport(
 
   out.push(overview(session, graphedDocIds.size));
   out.push(siteDistribution(session));
-  out.push(siteLimitationSection(session));
+  out.push(siteLimitationSection(session, opts.loggedIn ?? {}));
 
   if (graph && graph.clusters.length > 0 && opts.includeMermaid !== false) {
     out.push(topologyGraph(graph));
@@ -346,7 +355,10 @@ function siteDistribution(session: Session): string {
  *
  * 返回空字符串时会被 `renderMarkdownReport` 过滤掉，不会留下一个空标题。
  */
-function siteLimitationSection(session: Session): string {
+function siteLimitationSection(
+  session: Session,
+  loggedIn: Record<string, boolean>,
+): string {
   const docByUrl = new Map(session.documents.map((d) => [d.url, d]));
   const tally = new Map<string, { results: number; withContent: number; errors: number }>();
 
@@ -364,7 +376,10 @@ function siteLimitationSection(session: Session): string {
   const rows = [...tally.entries()]
     .filter(
       ([site, t]) =>
-        Boolean(SITE_LIMITATION_NOTES[site]) && (t.errors > 0 || t.withContent < t.results),
+        // 说明取 `siteLimitationNote` 而不是下标 —— 知乎那段话跟着登录态变，
+        // 下标取会拿到 undefined，而 undefined 只会让这一行少一句话，不报错
+        Boolean(siteLimitationNote(site, { loggedIn: loggedIn[site] })) &&
+        (t.errors > 0 || t.withContent < t.results),
     )
     .sort((a, b) => b[1].results - a[1].results);
 
@@ -374,7 +389,9 @@ function siteLimitationSection(session: Session): string {
     "## 站点抓取局限",
     "",
     "下面这些站点**拿不到正文是常态，不是故障**。列出来是为了让你不必去排查",
-    "一个不存在的问题 —— 本项目只访问公开页面，不逆向签名、不碰登录态。",
+    "一个不存在的问题 —— 本项目只访问公开页面，不逆向任何签名算法。",
+    "知乎的正文需要登录态：在界面的「知乎账号」里用你自己的账号扫码即可",
+    "（cookie 只存本机，不入库）。",
     "",
     "| 站点 | 本次拿到正文 | 说明 |",
     "| --- | --- | --- |",
@@ -382,7 +399,9 @@ function siteLimitationSection(session: Session): string {
 
   for (const [site, t] of rows) {
     body.push(
-      `| ${siteLabel(site)} | ${t.withContent}/${t.results} | ${escapeCell(SITE_LIMITATION_NOTES[site])} |`,
+      `| ${siteLabel(site)} | ${t.withContent}/${t.results} | ${escapeCell(
+        siteLimitationNote(site, { loggedIn: loggedIn[site] }) ?? "",
+      )} |`,
     );
   }
 

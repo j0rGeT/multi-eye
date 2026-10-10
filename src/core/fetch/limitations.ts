@@ -47,16 +47,70 @@ export function isKnownLimitation(error: string | undefined): boolean {
  * 与具体某一次失败无关，是这个站点的固有属性 —— 报告里的「站点抓取局限」
  * 一节直接用它。所以只要该站点在这次调研里出了结果，就该把对应的一行写出来，
  * 哪怕这次全抓到了：用户下次换一批链接就会撞上，先把话说在前头。
+ *
+ * 知乎**不在这张表里**：它的说明跟着「用户登录了没有」变，见 `siteLimitationNote`。
  */
 export const SITE_LIMITATION_NOTES: Record<string, string> = {
-  zhihu:
-    "知乎对未登录的游客访问一律返回 403，正文需要 `zh-zse-ck` 之类的签名。" +
-    "本项目不逆向签名、不碰登录态（合规红线），所以知乎的正文只能拿到搜索摘要。",
   xiaohongshu: "内容主要在小程序 / App 内，网页端对未登录访问长期是风控页。",
   x: "站内内容不被搜索引擎索引，且未登录读不到正文。",
   bilibili: "未登录时部分接口返回 412 风控页；公开元数据接口（视频 / 专栏 / 图文）不受影响。",
   youtube: "观看页 HTML 里没有正文，只有字幕可用；出口 IP 被判定为机器人时会拿不到字幕。",
 };
+
+/**
+ * 判断这条限制时需要的**上下文**。目前只有一项，但写成对象是有意的：
+ * 以后每多一个影响措辞的事实（比如「这次用的是哪个出口 IP」），都往这里加，
+ * 而不是再加一个位置参数让调用点猜顺序。
+ */
+export interface LimitationContext {
+  /**
+   * 用户是不是用**自己的账号**登录过这个站点（`core/auth/store.ts` 的
+   * `isLoggedIn`）。缺省当 false —— 没登录是默认态。
+   */
+  loggedIn?: boolean;
+}
+
+/*
+  ── 知乎的两种说法（P14）──
+
+  这一段是本项目立场的一次**用户明确授权的例外**，所以措辞要精确到能被审计：
+
+  原来这里写的是「本项目不逆向签名、不碰登录态（合规红线），所以只能拿到摘要」。
+  2026-10-10 用户明确选择支持知乎扫码登录，于是「不碰登录态」这半句不再成立，
+  留着它就是**代码在说假话**。改掉的是措辞，没改的是另一半：
+
+    · 仍然**不逆向** zhihu 的任何签名算法（该说的一句没少）
+    · 登录态是用户**自己扫码**得到的，存在本机 `data/auth/`，不入库、不上传
+    · 这是可选的：不登录，知乎就仍然只是搜索摘要，功能和以前完全一样
+
+  两种说法分开写，是为了让「用户到底该做什么」在两种状态下都明确 ——
+  「催他去登录」和「催他重新登录」是两件不同的事。
+*/
+const ZHIHU_NOTE = {
+  loggedOut:
+    "知乎对未登录的游客访问一律返回 403。本项目不逆向 zhihu 的任何签名算法；" +
+    "正文需要登录态 —— 可以在搜索面板的「知乎账号」里用你自己的账号扫码登录一次" +
+    "（cookie 只存在本机 data/auth/，不入库、不上传）。不登录也能用，只是知乎那几篇" +
+    "只有搜索摘要。",
+  loggedIn:
+    "已经带着你保存的知乎登录态去抓，仍然返回 403 —— 多半是这次登录过期了，" +
+    "在「知乎账号」里重新扫码即可。",
+} as const;
+
+/**
+ * 某个站点在这次调研里的限制说明；没有就返回 undefined。
+ *
+ * **报告、`未收录.md`、错误翻译三处都从这里取**，所以知乎那段话只有一份。
+ * 之前 `SITE_LIMITATION_NOTES[site]` 是直接下标取，加了「登录态影响措辞」之后
+ * 那样写会让知乎在报告里显示成 undefined —— 少一句话不会报错，只会静默地说少。
+ */
+export function siteLimitationNote(
+  site: string,
+  ctx: LimitationContext = {},
+): string | undefined {
+  if (site === "zhihu") return ctx.loggedIn ? ZHIHU_NOTE.loggedIn : ZHIHU_NOTE.loggedOut;
+  return SITE_LIMITATION_NOTES[site];
+}
 
 /**
  * 把错误文案翻译成「已知限制」说明。
@@ -71,12 +125,17 @@ export const SITE_LIMITATION_NOTES: Record<string, string> = {
  * 返回值是**完整替换**，所以每一句都能独立读通 —— 前缀带上原始错误码，
  * 用户仍然看得见到底发生了什么。
  */
-export function knownLimitation(site: SiteKey | string, error: string): string | null {
+export function knownLimitation(
+  site: SiteKey | string,
+  error: string,
+  ctx: LimitationContext = {},
+): string | null {
   const e = error ?? "";
 
-  // 知乎：实测 109/109 全是 403，无一例外。
+  // 知乎：实测 109/109 全是 403，无一例外。带上登录态仍然 403 是另一句话 ——
+  // 「去登录」和「重新登录」对用户来说是两个动作，不能糊成一句。
   if (site === "zhihu" && /HTTP 40[13]|风控|反爬/.test(e)) {
-    return `已知限制（不是故障）：HTTP 403 —— ${SITE_LIMITATION_NOTES.zhihu}`;
+    return `已知限制（不是故障）：HTTP 403 —— ${ZHIHU_NOTE[ctx.loggedIn ? "loggedIn" : "loggedOut"]}`;
   }
 
   // 小红书 / X：风控页与 403 都是平台策略，不是抓取参数没调对。

@@ -4,8 +4,15 @@
  * 只在 Readability 判定页面为 JS 空壳时才走到这里。Playwright 体积数百 MB，
  * 因此设成可选：没装就跳过这一级，正文退化为搜索摘要，其余功能不受影响。
  *
- * 明确不做的事：不连接本机已登录的 Chrome（CDP 复用登录态）。那属于未授权
- * 抓取，违反平台用户协议且有封号风险。要接的话只需改 getBrowser 这一处。
+ * ── 登录态（P14）──
+ *
+ * 这里会往浏览器上下文里灌 cookie，但**不是**去连本机那个已经登录的 Chrome
+ * （CDP 复用登录态）。那等于借用一个用户自己都说不清状态的会话，而且会让
+ * 一个外来的无头进程拿到他日常浏览器里的全部身份。要接的话只需改 getBrowser
+ * 这一处 —— 不做，是刻意的。
+ *
+ * 灌进去的是用户在界面上**自己扫码**（见 `core/auth/zhihu.ts`）拿到的 cookie，
+ * 只对该站点生效，存本机、不入库。
  */
 
 import { createRequire } from "node:module";
@@ -13,6 +20,7 @@ import { join } from "node:path";
 import type { Browser } from "playwright";
 import { config } from "@/core/env";
 import { shouldProxy } from "@/core/net/domestic";
+import { cookiesFor } from "@/core/auth/store";
 
 /**
  * 用 createRequire 而不是 `await import("playwright")`。
@@ -164,6 +172,33 @@ export async function fetchWithBrowser(
     locale: "zh-CN",
     viewport: { width: 1440, height: 900 },
   });
+
+  /*
+    登录态要灌进浏览器上下文，而不是只加一个 `Cookie` 请求头。
+
+    页面渲染出来之后，正文往往是页面**自己发的 XHR** 取回来再写进 DOM 的。
+    那种请求由浏览器发起，`context.route()` 改写头只能改到能被改写的那部分，
+    而 `addCookies` 是让浏览器认为「我本来就是登录着的」—— 后续所有同源请求
+    （包括页面自己发的）自动带上。这是两者唯一可靠的分工。
+
+    灌进去的仍然只有 `core/auth/cookies.ts` 表里那些站点（目前只有知乎），
+    且是用户自己扫码登录所得。
+  */
+  const cookies = await cookiesFor(url);
+  if (cookies.length > 0) {
+    await context.addCookies(
+      cookies.map((c) => ({
+        name: c.name,
+        value: c.value,
+        domain: c.domain,
+        path: c.path || "/",
+        ...(c.expires !== undefined && c.expires > 0 ? { expires: c.expires } : {}),
+        ...(c.httpOnly !== undefined ? { httpOnly: c.httpOnly } : {}),
+        ...(c.secure !== undefined ? { secure: c.secure } : {}),
+        ...(c.sameSite !== undefined ? { sameSite: c.sameSite } : {}),
+      })),
+    );
+  }
 
   try {
     // 拦掉图片/字体/媒体：正文提取不需要它们，能显著加快加载

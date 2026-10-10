@@ -1252,6 +1252,146 @@ try {
       knownLimitation("web", "HTTP 403") === null && knownLimitation("zhihu", "HTTP 403") !== null,
       "",
     );
+
+    /*
+      (d) 登录态改变措辞（P14）
+
+      用户明确要求支持知乎扫码登录之后，这段话不能再说「不碰登录态」——
+      留着就是代码在说假话。两种状态分开说，而且**都不能再出现「不碰登录态」**。
+    */
+    const out = knownLimitation("zhihu", "HTTP 403", { loggedIn: false });
+    const inn = knownLimitation("zhihu", "HTTP 403", { loggedIn: true });
+    check(
+      "站点限制",
+      "登录前说「去登录」，登录后说「重新扫码」（两句话必须不同）",
+      Boolean(out) && Boolean(inn) && out !== inn,
+      `未登录=${out?.slice(0, 30)}… / 已登录=${inn?.slice(0, 30)}…`,
+    );
+    check(
+      "站点限制",
+      "两句话都不再说「不碰登录态」（这是用户明确授权的例外，代码不能还说旧话）",
+      !/不碰登录态/.test(out ?? "") && !/不碰登录态/.test(inn ?? ""),
+      `未登录=${/不碰登录态/.test(out ?? "") ? "含旧话" : "OK"} / 已登录=${
+        /不碰登录态/.test(inn ?? "") ? "含旧话" : "OK"
+      }`,
+    );
+    check(
+      "站点限制",
+      "但「不逆向签名」这句立场必须留着（改的是登录态那半句，不是这一半）",
+      /不逆向/.test(out ?? ""),
+      out ?? "",
+    );
+  }
+
+  /*
+    ── 6.13 登录态 cookie 的发送范围（P14）──
+
+    这是整套登录功能里最危险的一段代码：写错一个字符，就是把用户的知乎身份
+    发给一个不相关的域名。所以它被拆成了零依赖的纯函数（`core/auth/cookies.ts`），
+    好让这里能直接引着跑一组**反例**。
+
+    用的都是「看起来像但其实不是」的域名 —— 这类输入才是真实攻击面，而
+    `includes("zhihu.com")` 那种偷懒写法能全部放过去。
+  */
+  step("6.13 登录态 cookie 只发给它该去的地方");
+
+  let accountSiteFor = null;
+  let cookieHeader = null;
+  let isAccountExpired = null;
+  try {
+    ({ accountSiteFor, cookieHeader, isAccountExpired } = await import(
+      "../src/core/auth/cookies.ts"
+    ));
+  } catch (err) {
+    soft("登录态", "能加载 auth/cookies.ts", `跳过：当前 Node 不支持直接跑 .ts（${err.message}）`);
+  }
+
+  if (accountSiteFor) {
+    const shouldMatch = [
+      ["https://www.zhihu.com/question/1", "zhihu", "子域"],
+      ["https://zhihu.com/", "zhihu", "本域"],
+      ["https://zhuanlan.zhihu.com/p/1", "zhihu", "专栏子域"],
+    ];
+    for (const [url, want, note] of shouldMatch) {
+      check(
+        "登录态",
+        `${note}该带上登录态 —— ${url}`,
+        accountSiteFor(url) === want,
+        String(accountSiteFor(url)),
+      );
+    }
+
+    /*
+      反例。每一条都单列，因为「哪一条漏了」比「有一组漏了」有用得多。
+    */
+    const mustNotMatch = [
+      ["https://notzhihu.com/", "不是后缀而是另一个域名"],
+      ["https://evilzhihu.com/", "「zhihu.com」被夹在中间"],
+      ["https://zhihu.com.evil.com/", "后缀被放在前面（最经典的一种）"],
+      ["https://zhihu.com.cn/", "多了一级后缀"],
+      ["https://zhihu.com@evil.com/", "userinfo 里塞了 zhihu.com"],
+      ["https://evil.com/?u=https://zhihu.com/", "查询串里带了 zhihu.com"],
+      ["https://zhihu.com.evil.com.zhihu.com.evil.com/", "绕两圈也不行"],
+      ["不是 URL", "解析不出来的输入"],
+    ];
+    for (const [url, note] of mustNotMatch) {
+      check(
+        "登录态",
+        `不许发给它 —— ${note}`,
+        accountSiteFor(url) === null,
+        `${url} → ${accountSiteFor(url)}`,
+      );
+    }
+
+    // 拼请求头：过期的要丢掉，格式要是标准的 `k=v; k=v`
+    const FIXED_NOW = 1_800_000_000_000; // 固定时刻，测试不能靠「现在几点」
+    const fresh = { name: "z_c0", value: "abc", domain: ".zhihu.com", path: "/" };
+    const stale = {
+      name: "old",
+      value: "dead",
+      domain: ".zhihu.com",
+      path: "/",
+      expires: FIXED_NOW / 1000 - 10,
+    };
+    const sessionCookie = { name: "sess", value: "s", domain: ".zhihu.com", path: "/", expires: -1 };
+    check(
+      "登录态",
+      "过期的 cookie 不进请求头（半登录比 403 更难懂）",
+      cookieHeader([fresh, stale], FIXED_NOW) === "z_c0=abc",
+      cookieHeader([fresh, stale], FIXED_NOW),
+    );
+    check(
+      "登录态",
+      "会话 cookie（expires=-1）不算过期",
+      cookieHeader([sessionCookie], FIXED_NOW) === "sess=s",
+      cookieHeader([sessionCookie], FIXED_NOW),
+    );
+    check(
+      "登录态",
+      "多个 cookie 拼成 `k=v; k=v`",
+      cookieHeader([fresh, sessionCookie], FIXED_NOW) === "z_c0=abc; sess=s",
+      cookieHeader([fresh, sessionCookie], FIXED_NOW),
+    );
+    check(
+      "登录态",
+      "全部过期时返回空串（调用方据此不发 Cookie 头）",
+      cookieHeader([stale], FIXED_NOW) === "",
+      cookieHeader([stale], FIXED_NOW),
+    );
+
+    check(
+      "登录态",
+      "整体过期能被判出来（界面据此提示「重新扫码」）",
+      isAccountExpired(
+        { site: "zhihu", cookies: [stale], savedAt: new Date(FIXED_NOW).toISOString() },
+        FIXED_NOW,
+      ) === true &&
+        isAccountExpired(
+          { site: "zhihu", cookies: [fresh], savedAt: new Date(FIXED_NOW).toISOString() },
+          FIXED_NOW,
+        ) === false,
+      "",
+    );
   }
 
   // ── 7. 下载 ────────────────────────────────────────────────

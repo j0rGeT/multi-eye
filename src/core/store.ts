@@ -10,9 +10,10 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { nanoid } from "nanoid";
 import type { Session, Topic } from "./types";
+import { DATA_DIR, SESSIONS_DIR } from "./paths";
 
-const DATA_DIR = path.join(process.cwd(), "data");
-const SESSIONS_DIR = path.join(DATA_DIR, "sessions");
+// 目录常量搬到了 `core/paths.ts` —— 登录态 cookie 也要落盘，两处各写一份
+// 迟早会分叉。对外导出的 `sessionDir` / `assetsDir` 签名不变，调用点不用动。
 
 export function sessionDir(id: string): string {
   return path.join(SESSIONS_DIR, id);
