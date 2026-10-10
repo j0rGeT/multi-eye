@@ -20,6 +20,7 @@ declare module "playwright" {
 
   export interface ElementHandle {
     innerText(): Promise<string>;
+    getAttribute(name: string): Promise<string | null>;
   }
 
   export interface Page {
@@ -30,6 +31,7 @@ declare module "playwright" {
     waitForLoadState(state: string, options?: { timeout?: number }): Promise<void>;
     $(selector: string): Promise<ElementHandle | null>;
     content(): Promise<string>;
+    url(): string;
     close(): Promise<void>;
   }
 
@@ -51,6 +53,10 @@ declare module "playwright" {
     newPage(): Promise<Page>;
     /** 把登录态灌进上下文（见 fetch/playwright.ts 里为什么不用改请求头那条路）。 */
     addCookies(cookies: readonly CookieParam[]): Promise<void>;
+    /** 读当前上下文里的 cookie。扫码登录靠它判「用户扫完了没有」。 */
+    cookies(urls?: string | readonly string[]): Promise<CookieParam[]>;
+    /** 已经打开的页面。扫码时知乎自己会跳转，要拿到的就是那个页面。 */
+    pages(): Page[];
     close(): Promise<void>;
   }
 
@@ -60,6 +66,8 @@ declare module "playwright" {
       locale?: string;
       viewport?: { width: number; height: number };
     }): Promise<BrowserContext>;
+    /** 用户把窗口关掉时变 false —— 登录轮询靠它及时收手，不空等到超时。 */
+    isConnected(): boolean;
     close(): Promise<void>;
   }
 

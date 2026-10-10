@@ -87,6 +87,9 @@ importers:
       '@types/turndown':
         specifier: ^5.0.6
         version: 5.0.6
+      playwright:
+        specifier: 1.51.1
+        version: 1.51.1
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
@@ -654,6 +657,11 @@ packages:
   fflate@0.8.3:
     resolution: {integrity: sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA==}
 
+  fsevents@2.3.2:
+    resolution: {integrity: sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA==}
+    engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
+    os: [darwin]
+
   function-bind@1.1.2:
     resolution: {integrity: sha512-7XHNxH7qX9xG5mIwxkhumTox/MIRNcOgDrxWsMt2pAr23WHp6MrRlN7FBSFpCpr+oVO0F744iUgR82nJMfG2SA==}
 
@@ -831,6 +839,16 @@ packages:
 
   picocolors@1.1.1:
     resolution: {integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==}
+
+  playwright-core@1.51.1:
+    resolution: {integrity: sha512-/crRMj8+j/Nq5s8QcvegseuyeZPxpQCZb6HNk3Sos3BlZyAknRjoyJPFWkpNn8v0+P3WiwqFF8P+zQo4eqiNuw==}
+    engines: {node: '>=18'}
+    hasBin: true
+
+  playwright@1.51.1:
+    resolution: {integrity: sha512-kkx+MB2KQRkyxjYPc3a0wLZZoDczmppyGJIvQ43l+aZihkaVvmu/21kiyaHeHjiFxjxNNFnUncKmcGIyOojsaw==}
+    engines: {node: '>=18'}
+    hasBin: true
 
   postcss@8.5.23:
     resolution: {integrity: sha512-g50586zr4bZmwFiTlflMu8E0bDTb5I5gertgwAKmsdUlTQIhZtunzUlD1WSzwcVWPoAVpsrA6vlfCD7oXvRwgg==}
@@ -1452,6 +1470,9 @@ snapshots:
 
   fflate@0.8.3: {}
 
+  fsevents@2.3.2:
+    optional: true
+
   function-bind@1.1.2: {}
 
   graphology-communities-louvain@2.0.2(graphology-types@0.24.8):
@@ -1642,6 +1663,14 @@ snapshots:
   path-type@4.0.0: {}
 
   picocolors@1.1.1: {}
+
+  playwright-core@1.51.1: {}
+
+  playwright@1.51.1:
+    dependencies:
+      playwright-core: 1.51.1
+    optionalDependencies:
+      fsevents: 2.3.2
 
   postcss@8.5.23:
     dependencies:

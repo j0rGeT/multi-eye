@@ -26,7 +26,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { readFile, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1392,6 +1392,153 @@ try {
         ) === false,
       "",
     );
+  }
+
+  // ── 6.14 登录态接口 ────────────────────────────────────────
+  step("6.14 登录态接口（cookie 绝不外泄 · 能真删掉）");
+
+  /*
+    这一段会动本机真实的 data/auth/zhihu.json，所以先备份、测完原样恢复 ——
+    用户可能真的扫码登录着，跑一次 e2e 不该把他的登录态冲掉。
+  */
+  const AUTH_FILE = join(ROOT, "data", "auth", "zhihu.json");
+  const authUrl = `${BASE}/api/auth/zhihu`;
+  let authBackup = null;
+  try {
+    authBackup = await readFile(AUTH_FILE, "utf8");
+  } catch {
+    authBackup = null; // 本来就没有 → 测完删干净
+  }
+
+  /*
+    这段测试是**只能这么做**的：登录态没有「设置」接口（唯一能写入的路径是
+    真人扫码），所以只能绕到后面直接往磁盘写一份 —— 模拟的正是「扫码成功后
+    loginZhihu 落盘」那一步。
+
+    写文件之前必须先 DELETE，因为服务端把「读账号」缓存成了 Promise
+    （`auth/store.ts` 的 cache），只有它自己的 save/clear 会失效；不先清缓存，
+    GET 读到的还是改写之前的状态。这一步顺带验证了「退出登录确实清了缓存」。
+  */
+  const SENTINEL = "SENTINEL_z_c0_绝不该出现在任何接口响应里";
+  const writeAccount = (account) =>
+    mkdir(dirname(AUTH_FILE), { recursive: true }).then(() =>
+      writeFile(AUTH_FILE, JSON.stringify(account, null, 2), { encoding: "utf8", mode: 0o600 }),
+    );
+  const authGet = async () => {
+    const raw = await (await fetch(authUrl)).text();
+    return { raw, json: JSON.parse(raw) };
+  };
+
+  try {
+    await fetch(authUrl, { method: "DELETE" });
+    await writeAccount({
+      site: "zhihu",
+      displayName: "e2e 假账号",
+      cookies: [
+        { name: "z_c0", value: SENTINEL, domain: ".zhihu.com", path: "/" },
+        { name: "_xsrf", value: "x", domain: ".zhihu.com", path: "/" },
+      ],
+      savedAt: new Date().toISOString(),
+    });
+
+    const a = await authGet();
+    check(
+      "登录态接口",
+      "落盘的账号读得出来（扫码成功之后界面就该说「已登录」）",
+      a.json.loggedIn === true && a.json.account?.displayName === "e2e 假账号",
+      a.raw,
+    );
+    check(
+      "登录态接口",
+      "cookie 的**值**绝不出现在响应里 —— 这是这个接口唯一不能破的红线",
+      !a.raw.includes(SENTINEL),
+      a.raw.includes(SENTINEL) ? "响应里出现了 cookie 值！" : "哨兵值未出现",
+    );
+    check(
+      "登录态接口",
+      "响应里根本没有 cookies 字段（是结构上没有，不是靠记得不填）",
+      !Object.prototype.hasOwnProperty.call(a.json, "cookies") &&
+        a.json.account !== null &&
+        !Object.prototype.hasOwnProperty.call(a.json.account, "cookies"),
+      `顶层=${Object.keys(a.json).join(",")} · account=${Object.keys(a.json.account ?? {}).join(",")}`,
+    );
+    check(
+      "登录态接口",
+      "只报条数、不报内容",
+      a.json.account?.cookieCount === 2,
+      `cookieCount=${a.json.account?.cookieCount}`,
+    );
+    check(
+      "登录态接口",
+      "没过期的账号 expired=false",
+      a.json.account?.expired === false,
+      `expired=${a.json.account?.expired}`,
+    );
+
+    /*
+      过期的账号。这里的断言是**抓取侧与界面口径必须一致**：
+      抓取侧 `isLoggedIn()` 把过期算作未登录（于是不发 cookie），界面就不能
+      说「已登录」—— 否则用户以为生效了，实际仍然 403，还找不到原因。
+      但账号信息要留着，界面才能说「已过期，重新扫码」而不是「未登录」。
+    */
+    await fetch(authUrl, { method: "DELETE" }); // 见上：先清服务端缓存
+    await writeAccount({
+      site: "zhihu",
+      displayName: "e2e 过期账号",
+      cookies: [
+        // 2001 年就过期了
+        { name: "z_c0", value: "dead", domain: ".zhihu.com", path: "/", expires: 1_000_000_000 },
+      ],
+      savedAt: new Date(1_000_000_000_000).toISOString(),
+    });
+
+    const b = await authGet();
+    check(
+      "登录态接口",
+      "过期的登录态算未登录（免得界面说已生效、抓取却根本没带 cookie）",
+      b.json.loggedIn === false && b.json.account !== null,
+      b.raw,
+    );
+    check(
+      "登录态接口",
+      "但账号信息还在，界面据此说「已过期，重新扫码」而不是「未登录」",
+      b.json.account?.expired === true && b.json.account?.displayName === "e2e 过期账号",
+      b.raw,
+    );
+
+    const del = await (await fetch(authUrl, { method: "DELETE" })).json();
+    check(
+      "登录态接口",
+      "退出登录返回 ok + 未登录",
+      del.ok === true && del.loggedIn === false,
+      JSON.stringify(del),
+    );
+    check(
+      "登录态接口",
+      "退出登录是**真删文件**，不是标记失效（凭证留在盘上就是隐患）",
+      !existsSync(AUTH_FILE),
+      AUTH_FILE,
+    );
+
+    const c = await authGet();
+    check(
+      "登录态接口",
+      "退出之后状态回到未登录",
+      c.json.loggedIn === false && c.json.account === null,
+      c.raw,
+    );
+  } finally {
+    /*
+      恢复原状。注意：磁盘恢复了，**服务端进程里的缓存没有**（它此刻记的是
+      「没有账号」）。本脚本 6.14 之后不再碰知乎，所以不影响后面的断言；
+      常驻的 dev server 重启一次即可。
+    */
+    if (authBackup !== null) {
+      await mkdir(dirname(AUTH_FILE), { recursive: true });
+      await writeFile(AUTH_FILE, authBackup, { encoding: "utf8", mode: 0o600 });
+    } else {
+      await rm(AUTH_FILE, { force: true });
+    }
   }
 
   // ── 7. 下载 ────────────────────────────────────────────────

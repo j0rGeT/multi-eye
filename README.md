@@ -107,7 +107,9 @@ pnpm example:docs  <sessionId>               # 逐篇抓取结果与降级原因
 
 ### 搜索层：靠 `site:` 定向，不碰平台鉴权
 
-各平台的开放接口要么没有（知乎、小红书），要么按量计费（X）、要么免费额度只够每天 100 次（YouTube）。所以这里走的是**搜索引擎做发现层 + 站点适配器做深挖**：用 `site:zhihu.com <主题>` 这类定向语法让搜索引擎替我们完成跨站检索，完全不需要碰各平台的签名与登录态。
+各平台的开放接口要么没有（知乎、小红书），要么按量计费（X）、要么免费额度只够每天 100 次（YouTube）。所以这里走的是**搜索引擎做发现层 + 站点适配器做深挖**：用 `site:zhihu.com <主题>` 这类定向语法让搜索引擎替我们完成跨站检索，**不需要碰任何平台的签名算法**。
+
+唯一一处例外是知乎的登录态，见下面「知乎登录态」一节。
 
 `SearchProvider` 适配器按链降级：`Serper? → SearXNG → yt-dlp（YouTube 专用）`。
 
@@ -121,7 +123,7 @@ pnpm example:docs  <sessionId>               # 逐篇抓取结果与降级原因
 | 视频 | 2 | B站公开接口 | B站视频：标题 / UP主 / 分区 / 标签 / 简介 / 字幕 |
 | 图文 | 3 | B站公开接口 | B站专栏 `/read/`、图文 `/opus/` |
 | 图文 | 4 | HTTP + Readability | 大部分博客、新闻、专栏 |
-| 图文 | 5 | Playwright 无头浏览器 | JS 空壳站点（需 `PLAYWRIGHT_MODE=on-demand`） |
+| 图文 | 5 | Playwright 无头浏览器 | JS 空壳站点（需 `PLAYWRIGHT_MODE=on-demand`，且已 `npx playwright install chromium`） |
 | 共同 | 6 | 兜底 | 退化为搜索摘要，`extractMethod: "raw"` |
 
 类型判据是 `site + url` 的纯函数，**不读落库的 `kind` 字段**（那只是抓取那一刻的快照，判据一改就过期）。凡是要据此做决定的地方都走 `docKind()` 现算。
@@ -134,6 +136,31 @@ pnpm example:docs  <sessionId>               # 逐篇抓取结果与降级原因
 - **B站**：页面抓出来的是站内导航 + 侧栏的「接下来播放」推荐列表 —— 一千多字里没有一个是这个视频的内容，而几十篇这样的资料叠在一起，TF-IDF 里「首页/番剧/会员购/点赞」的权重会高到离谱。
 
 B站通道走 `api.bilibili.com` 的公开接口，**不需要登录、不需要签名**（wbi 签名是给播放地址那类接口用的，元数据接口不用）。它返回的是视频自己的东西；视频被删除时也会明确告诉你 `code=62002 稿件不可见`，而不是给你一段别人的视频标题。
+
+## 知乎登录态（唯一的例外，可选）
+
+知乎对**未登录的游客**一律返回 403，于是它的正文默认只能拿到搜索摘要 —— 这是全部失败里
+数量最大的一类，也是唯一一类**用户自己动手就能消掉**的。所以界面上给了一个入口：搜索面板里
+勾了知乎就会出现「知乎账号」那一栏，点「扫码登录」会用 Playwright 在你**这台机器上开一个
+真实浏览器窗口**，用知乎 App 扫码即可。
+
+这和「不碰登录态」的边界是这样划的：
+
+| | |
+|---|---|
+| ✅ 做 | 打开**知乎自己的**登录页，你自己扫码。抓的是**公开页面**，只是带上了你登录后本来就有的 cookie |
+| ❌ 不做 | 账号密码登录（密码要经过我们的进程，那是个完全不该存在的风险面） |
+| ❌ 不做 | CDP 复用你日常 Chrome 的登录态（那会拿到你全部身份，远超「读知乎正文」所需） |
+| ❌ 不做 | **逆向 `x-zse-93` / `x-zse-96` 那套签名算法** —— 这条一个字节都没动，`examples/e2e.mjs` 里钉住了 |
+
+cookie 落在 `data/auth/zhihu.json`（`0600`），`data/auth/` 在 `.gitignore` 里被显式挡住。
+抓取时只有 `fetch/http.ts` 与 `fetch/playwright.ts` 会带上它，而且只发给 `zhihu.com` 及其子域
+（`core/auth/cookies.ts` 的 `accountSiteFor()` —— 反例包括 `zhihu.com.evil.com`、`zhihu.com@evil.com`）。
+**任何接口都不会返回 cookie 的值**：状态接口过的是 `publicAccount()`，那个类型结构性地没有
+cookie 字段（e2e 里用一个哨兵值钉住这一条）。随时点「退出登录」，那是**真删文件**。
+
+> ⚠️ 用**你自己的账号**读公开页面，频繁抓取有封号风险 —— 这是使用这个功能的代价，用之前请想清楚。
+> 不登录完全不影响其余功能。
 
 ## 目录结构
 
@@ -150,12 +177,14 @@ src/
 │     ├─ export/route.ts      GET → report.md
 │     ├─ export/image/route.ts GET → 拓扑图 SVG
 │     ├─ download/route.ts    POST 建任务 / GET SSE 进度
-│     └─ session/route.ts     GET 取回会话 / POST 存图的布局（刷新页面后接着用）
+│     ├─ session/route.ts     GET 取回会话 / POST 存图的布局（刷新页面后接着用）
+│     └─ auth/zhihu/route.ts  GET 登录状态 / POST 扫码（SSE）/ DELETE 退出（真删文件）
 ├─ core/
 │  ├─ types.ts                ★ 全局契约，其余模块都围绕它编程
 │  ├─ env.ts                  配置与可用性探测
 │  ├─ store.ts                会话落盘（文件系统，无数据库）
 │  ├─ limit.ts                并发闸 + 退避重试
+│  ├─ auth/                   cookies（域判据 + 拼头，零依赖）/ store（落盘）/ zhihu（扫码）
 │  ├─ search/                 provider / searxng / serper / ytdlp / sites
 │  ├─ fetch/                  extract（降级链）/ http / agent（代理）/ readability
 │  │                          / playwright / youtube / bilibili
@@ -166,7 +195,7 @@ src/
 │  └─ download/               queue（状态机）/ kinds（各类资源的下载器）
 └─ components/
    ├─ graph/                  GraphView / GraphToolbar / GraphTooltip / GraphLegend
-   └─ SearchPanel / NodeDetail / DownloadPanel / postSse
+   └─ SearchPanel / NodeDetail / DownloadPanel / FeedPanel / ZhihuLogin / postSse
 
 examples/
 ├─ e2e.mjs                    全链路验证：断言的 8 步
@@ -203,7 +232,8 @@ data/sessions/<id>/           运行时产物（gitignore）
 
 ## 明确不做
 
-- **不逆向知乎/小红书的签名算法，不碰登录态**（CDP 复用 Chrome 登录状态）—— 合规风险不可控
+- **不逆向任何站点的签名算法**（知乎 `x-zse-*`、小红书 `x-s`、B站 wbi）—— 合规风险不可控
+- 不做账号密码登录，不 CDP 复用你日常浏览器的登录态。知乎扫码是**唯一的例外**，边界与代价见上面「知乎登录态」一节
 - 不做用户系统、数据库（文件系统存会话够了）
 - 不做分布式/多机 —— 单机个人工具
 
@@ -216,7 +246,7 @@ data/sessions/<id>/           运行时产物（gitignore）
 
 | 现象 | 原因 |
 |---|---|
-| 知乎返回 403 | 未登录的游客访问被拦，需要 `zh-zse-ck` 签名。直连和走代理都一样，不是代理问题 |
+| 知乎返回 403 | 未登录的游客访问被拦。直连和走代理都一样，不是代理问题。**这条可以自己消掉**：在「知乎账号」里扫码登录一次，见上面那一节。登录之后仍 403，说明登录态过期了，重新扫 |
 | 小红书、X 搜索结果为空 | 站内内容不被搜索引擎索引 |
 | B站视频只有标题和标签 | 该视频没有 CC 字幕、简介也是空的。接口已尽力，比拿推荐列表冒充正文诚实 |
 | 覆盖率不高的中文长尾站点 | 没装 Playwright 时只能拿到静态 HTML。`/api/health` 会区分「已关闭」和「已启用但未安装」——两者都不是故障，是配置 |

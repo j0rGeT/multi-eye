@@ -35,6 +35,7 @@ import { relevanceSummary } from "@/core/search/relevance";
 import { formatSignalValue, signalSummary } from "@/core/signals";
 import { methodLabel } from "./NodeDetail";
 import FeedPanel from "./FeedPanel";
+import ZhihuLogin from "./ZhihuLogin";
 import type { Document } from "@/core/types";
 
 /** 排序模式的一句话解释 —— 挂在下拉框的 title 上。 */
@@ -183,6 +184,13 @@ export default function SearchPanel(props: SearchPanelProps) {
           「订阅管理」在那儿，用户会以为它对所有源都生效。
         */}
         {sites.includes("rss") && <FeedPanel />}
+
+        {/*
+          知乎登录态。和 FeedPanel 同一条理由：只有勾了知乎才显示。
+          它和别的源的区别是 —— 知乎 403 是唯一一类用户自己扫码就能消掉的
+          失败，所以值得摆在这里，而不是藏在设置页里。
+        */}
+        {sites.includes("zhihu") && <ZhihuLogin />}
 
         {/*
           时效与排序。放在搜索条件里而不是结果之上，是因为它们是**下一次搜索
