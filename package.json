@@ -45,6 +45,7 @@
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-markdown": "^10.1.0",
+    "recharts": "^3.10.1",
     "remark-gfm": "^4.0.1",
     "segmentit": "^2.0.3",
     "turndown": "^7.2.4",

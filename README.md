@@ -95,7 +95,7 @@ pnpm example:docs  <sessionId>               # 逐篇抓取结果与降级原因
 | `SEARCH_PER_SITE_LIMIT` | `30` | 每站点候选上限，给过滤层留出余量 |
 | `SEARCH_ENOUGH_RESULTS` | `12` | 单站点拿到多少候选后停止补搜，可调低节省 Serper 费用 |
 | `SEARCH_QUERY_VARIANTS` | `5` | 每站点最多尝试的查询变体数，用于型号别名与关联技术词补搜 |
-| `SEARCH_REFINE_MAX` | `3` | 抓取后“整理 + 补搜”的最大轮次 |
+| `SEARCH_DEPTH` | `3` | 抓取后“整理 + 补搜”全局默认最大轮次（1~10） |
 | `DOWNLOAD_CONCURRENCY` | `3` | 下载队列并发 |
 
 ### LLM 构图是可选的

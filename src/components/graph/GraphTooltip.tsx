@@ -54,6 +54,18 @@ export default function GraphTooltip({ state }: { state: TooltipState | null }) 
       <div className="gtip-meta">
         <span className="gtip-kind">{KIND_LABEL[node.kind] ?? node.kind}</span>
         {node.type && <span className="gtip-kind">{node.type}</span>}
+        {node.publishedYear && (
+          <span
+            className="gtip-kind"
+            title={node.isYearInferred ? "根据关联技术与语料时序推导" : "最早资料发布时间"}
+            style={{
+              color: node.isYearInferred ? "var(--fg-muted)" : "var(--accent)",
+              border: `1px solid ${node.isYearInferred ? "var(--border-subtle)" : "rgba(88, 166, 255, 0.4)"}`,
+            }}
+          >
+            {node.publishedYear}年{node.isYearInferred ? " (推导)" : ""}
+          </span>
+        )}
         <span className="dim">权重 {node.weight.toFixed(1)}</span>
         <span className="dim">连接 {node.degree}</span>
       </div>

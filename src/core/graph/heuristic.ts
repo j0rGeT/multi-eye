@@ -22,6 +22,7 @@ import type {
 import { tokenize, type Token } from "./tokenize";
 import { computeTfidf, selectKeywords } from "./tfidf";
 import { detectCommunities } from "./communities";
+import { annotateNodeTimes } from "./timeline";
 
 export interface HeuristicOptions {
   signal?: AbortSignal;
@@ -252,14 +253,17 @@ function assemble(input: AssembleInput): GraphModel {
   // ── 簇 ──
   const clusters = buildClusters(communities, tfidf, docKeywords, docs);
 
+  // 注解节点时间属性（发布年份及最早时间，并以边关系推导未定年节点）
+  const annotatedNodes = annotateNodeTimes(nodes, docs, graphEdges);
+
   return {
     version: 1,
     topic,
-    nodes,
+    nodes: annotatedNodes,
     edges: graphEdges,
     clusters,
     stats: {
-      nodeCount: nodes.length,
+      nodeCount: annotatedNodes.length,
       edgeCount: graphEdges.length,
       clusterCount: clusters.length,
       docCount: docs.length,

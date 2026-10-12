@@ -16,6 +16,7 @@ import { normalizeUrl } from "@/core/search/normalize";
 import { hasLLM } from "@/core/env";
 import { chatJson } from "@/core/llm/chat";
 import { extractMany } from "@/core/fetch/extract";
+import { annotateNodeTimes } from "@/core/graph/timeline";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -179,7 +180,11 @@ async function deepSearch(
 
   // 深入搜索针对技术节点，过滤掉可能非常缓慢且不稳定的视频爬取（如 yt-dlp）
   const deepSites = topic.sites.filter((s) => s !== "youtube");
-  const plan = await planQueries(focus, deepSites, { signal, intent });
+  const plan = await planQueries(focus, deepSites, {
+    signal,
+    intent,
+    industries: session.searchOptions?.industries,
+  });
   const search = await searchAll({
     topic: focus,
     plan,
@@ -236,7 +241,7 @@ async function deepSearch(
 
   const nextGraph: GraphModel = {
     ...graph,
-    nodes: nextNodes,
+    nodes: annotateNodeTimes(nextNodes, nextDocuments, graph.edges),
     stats: {
       ...graph.stats,
       docCount: nextDocuments.length,
@@ -388,7 +393,10 @@ async function expandNode(
   // 针对新补充的技术概念执行快线补搜与材料充实
   const deepSites = topic.sites.filter((s) => s !== "youtube");
   const searchQuery = [node.label, ...expandedTerms.slice(0, 2).map((t) => t.label)].join(" ");
-  const searchPlan = await planQueries(searchQuery, deepSites, { signal });
+  const searchPlan = await planQueries(searchQuery, deepSites, {
+    signal,
+    industries: session.searchOptions?.industries,
+  });
   const searchResult = await searchAll({
     topic: searchQuery,
     plan: searchPlan,
@@ -445,7 +453,7 @@ async function expandNode(
 
   const nextGraph: GraphModel = {
     ...graph,
-    nodes: updatedNextNodes,
+    nodes: annotateNodeTimes(updatedNextNodes, nextDocuments, updatedNextEdges),
     edges: updatedNextEdges,
     stats: {
       ...graph.stats,

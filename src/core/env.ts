@@ -141,6 +141,11 @@ export const config = {
     每站点候选上限。上游常见的一页是 20 条，但 GitHub/RSS 等源能给更多；
     质量闸门会在抓取前再筛一轮，所以这里宁可多拿候选，也不要让过滤后无料可抓。
    */
+  /** 搜索与知识迭代深度，默认 3 轮（区间 1~10，遇非法数字安全兜底为 3）。 */
+  searchDepth: (() => {
+    const n = Number(process.env.SEARCH_DEPTH);
+    return Number.isFinite(n) ? Math.max(1, Math.min(10, Math.floor(n))) : 3;
+  })(),
   searchPerSiteLimit: Number(process.env.SEARCH_PER_SITE_LIMIT ?? 30),
   /**
    * 链上某条 provider 拿到这么多条就不再往链下游走（短路，见 orchestrate.ts 的

@@ -15,6 +15,7 @@ import { buildQuery, DEFAULT_SITES, SITE_TARGETS } from "@/core/search/sites";
 import { planQueries, variantFor } from "@/core/search/plan";
 import { newTopicId, saveSession } from "@/core/store";
 import { sseResponse } from "@/core/sse";
+import { config } from "@/core/env";
 
 // 不导出 runtime：Next 16 里 'nodejs' 已是默认值（Edge 废弃），文档要求移除该导出。
 export const dynamic = "force-dynamic";
@@ -24,6 +25,10 @@ interface SearchBody {
   query?: string;
   /** 用户在关键词之外填写的意图提示，作为检索的硬约束。 */
   intent?: string;
+  /** 用户选定的行业标签，用于缩小搜索范围。 */
+  industries?: string[];
+  /** 搜索迭代深度（1~6，默认 3）。 */
+  depth?: number;
   sites?: SiteKey[];
   domain?: string;
   timeRange?: string;
@@ -74,6 +79,12 @@ export async function POST(req: NextRequest) {
   const timeRange = pickTimeRange(body.timeRange);
   const sortMode = pickSortMode(body.sortMode);
   const intent = body.intent?.trim() || undefined;
+  const industries = Array.isArray(body.industries)
+    ? body.industries.map((s) => String(s).trim()).filter(Boolean).slice(0, 8)
+    : undefined;
+  const depth = body.depth
+    ? Math.max(1, Math.min(10, Number(body.depth)))
+    : config.searchDepth;
 
   const topic: Topic = {
     id: newTopicId(),
@@ -96,7 +107,7 @@ export async function POST(req: NextRequest) {
       分析失败/超时/没配 LLM 都会退化成「不改写」（见 plan.ts），
       此时 queries 与加这个功能之前逐字相同。
     */
-    const plan = await planQueries(query, sites, { signal: req.signal, intent });
+    const plan = await planQueries(query, sites, { signal: req.signal, intent, industries });
 
     emit({
       type: "plan",
@@ -105,7 +116,7 @@ export async function POST(req: NextRequest) {
       queries: sites.map((s) => buildQuery(variantFor(plan, s), s, body.domain)),
     });
 
-    const { results, log, timeFilter } = await searchAll({
+    const { results, log, timeFilter, industryFilter } = await searchAll({
       topic: query,
       plan,
       domain: body.domain,
@@ -144,7 +155,7 @@ export async function POST(req: NextRequest) {
       createdAt: new Date().toISOString(),
       // 把当时的口径一起存下来，否则事后没法解释「为什么这次搜出来的资料
       // 比上次少一大截」—— 可能只是当时勾了「一周内」
-      searchOptions: { timeRange, sortMode, intent },
+      searchOptions: { timeRange, sortMode, intent, industries, depth },
       plan,
     };
     await saveSession(session);
@@ -156,6 +167,7 @@ export async function POST(req: NextRequest) {
       // 筛选口径和它的副作用一起回传，界面才可以如实说明「筛掉了 N 条、
       // 另有 M 条因为没写日期而无法判断」
       timeFilter,
+      industryFilter,
     });
   }, req.signal);
 }

@@ -35,6 +35,7 @@ import { lexicalRelevance, mergeRelevance } from "./relevance";
 import { judgeRelevance } from "./relevance-llm";
 import { classifySearchResults } from "./value";
 import { probeTopicProviders } from "./registry";
+import { matchIndustries } from "./industries";
 
 /**
  * 每个 provider 的并发上限。
@@ -110,6 +111,8 @@ export interface OrchestrateOptions {
   sortMode?: SortMode;
   /** 每个站点一有结果就回调，用于 SSE 增量推送。 */
   onSiteDone?: (site: SiteKey, results: SearchResult[], log: ProviderLogEntry) => void;
+  /** 补搜阶段额外传入的技术补充查询词 */
+  extraQueries?: string[];
   /** 是否跳过较慢的 LLM 相关性及价值二次判别，用于节点快速深入搜索等交互场景 */
   skipLlmJudgement?: boolean;
 }
@@ -124,6 +127,8 @@ export interface OrchestrateResult {
    * 判断、于是被保留了下来。不显示这个数，用户会以为「一周内」是严格的。
    */
   timeFilter: { dropped: number; unknown: number };
+  /** 行业过滤的统计：有多少条未命中所选行业。 */
+  industryFilter?: { unmatched: number };
 }
 
 /** 构建 provider 链：商业 API 优先，SearXNG 兜底。 */
@@ -254,7 +259,10 @@ export async function searchAll(
 
       // directOnly 的站点（HN/GitHub/arXiv）已经被 `.filter` 挡在外面了，
       // 走到这里的站点都该走一遍引擎链
-      const queryVariants = queryVariantsFor(plan, site, topic);
+      const baseVariants = queryVariantsFor(plan, site, topic);
+      const queryVariants = opts.extraQueries?.length
+        ? [...new Set([...baseVariants, ...opts.extraQueries.slice(0, 2)])]
+        : baseVariants;
       for (const provider of chain) {
         if (!provider.capabilities.supportsSiteSyntax && site !== "web") continue;
 
@@ -507,7 +515,19 @@ export async function searchAll(
     });
   }
   /*
-    关联度判定完成后，把默认排序再跑一遍。
+    行业匹配标注：如果指定了行业标签，为每条结果计算匹配度，只标记不删除。
+  */
+  let unmatchedIndustryCount = 0;
+  if (plan?.industries?.length) {
+    withValue = withValue.map((r) => {
+      const match = matchIndustries(r, plan.industries);
+      if (match.matched.length === 0) unmatchedIndustryCount++;
+      return { ...r, industryMatch: match };
+    });
+  }
+
+  /*
+    关联度及行业判定完成后，把默认排序再跑一遍。
 
     `rankResults` 在没有 relevance 时仍然是原来的多源印证优先；拿到分数后，
     只把它作为同印证数、同上游排名之间的 tie-breaker，不推翻“多源优先”。
@@ -519,7 +539,12 @@ export async function searchAll(
       ? rankResults(withValue, "relevant")
       : withValue;
 
-  return { results, log: allLogs, timeFilter: { dropped, unknown } };
+  return {
+    results,
+    log: allLogs,
+    timeFilter: { dropped, unknown },
+    industryFilter: plan?.industries?.length ? { unmatched: unmatchedIndustryCount } : undefined,
+  };
 }
 
 /**
@@ -589,6 +614,7 @@ export function rankResults(
   const byEvidence = (a: SearchResult, b: SearchResult) =>
     b.hitCount - a.hitCount ||
     relevanceScore(b) - relevanceScore(a) ||
+    industryScore(b) - industryScore(a) ||
     a.rank - b.rank ||
     normalizeUrl(a.url).localeCompare(normalizeUrl(b.url));
 
@@ -657,6 +683,11 @@ export function rankResults(
 /** 关联度只在“印证数相同”时生效；没有分数的旧结果按 0 处理。 */
 function relevanceScore(r: SearchResult): number {
   return r.relevance?.score ?? 0;
+}
+
+/** 行业契合度只在“印证数与关联度相同”时作为微弱 tie-breaker；没有选行业的默认 0。 */
+function industryScore(r: SearchResult): number {
+  return r.industryMatch?.score ?? 0;
 }
 
 /**

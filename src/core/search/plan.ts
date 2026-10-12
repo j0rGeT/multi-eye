@@ -26,6 +26,7 @@ import { z } from "zod";
 import type { SearchPlan, SiteKey } from "@/core/types";
 import { config, hasLLM } from "@/core/env";
 import { chatJson } from "@/core/llm/chat";
+import { industryClause } from "./industries";
 
 /**
  * 整个分析过程的截止时间（含返修那一轮）。
@@ -133,10 +134,14 @@ function userPrompt(
   sites: SiteKey[],
   userIntent?: string,
   avoidPatterns?: string[],
+  industries?: string[],
 ): string {
   const lines = [
     `调研主题（用户原话）：${raw}`,
     userIntent ? `用户意图提示（必须满足）：${userIntent}` : null,
+    industries?.length
+      ? `用户限定的行业范围（硬约束，围绕该行业的技术与应用展开）：${industries.join("、")}`
+      : null,
     avoidPatterns?.length
       ? `已识别需规避的低价值/跑题特征（并入 negatives，variants 里避开）：${avoidPatterns.join("、")}`
       : null,
@@ -159,6 +164,8 @@ export async function planQueries(
   opts: {
     signal?: AbortSignal;
     intent?: string;
+    /** 用户选定的行业限定标签。 */
+    industries?: string[];
     /**
      * 前几轮整理识别出的低价值/跑题特征（标题模式）。
      *
@@ -170,11 +177,12 @@ export async function planQueries(
   } = {},
 ): Promise<SearchPlan> {
   const userIntent = opts.intent?.trim() || undefined;
+  const industries = opts.industries?.map((s) => s.trim()).filter(Boolean);
   if (!hasLLM()) {
-    return lexicalPlan(raw, "未配置 LLM_API_KEY", userIntent);
+    return lexicalPlan(raw, "未配置 LLM_API_KEY", userIntent, industries);
   }
   if (sites.length === 0) {
-    return lexicalPlan(raw, "没有选中任何站点", userIntent);
+    return lexicalPlan(raw, "没有选中任何站点", userIntent, industries);
   }
 
   /*
@@ -195,15 +203,9 @@ export async function planQueries(
         { role: "system", content: SYSTEM_PROMPT },
         {
           role: "user",
-          content: userPrompt(raw, sites, userIntent, opts.avoidPatterns),
+          content: userPrompt(raw, sites, userIntent, opts.avoidPatterns, industries),
         },
       ],
-      /*
-        同时给出 `timeoutMs`：`signal` 是「整个分析」的截止时间，`timeoutMs` 是
-        「这一次 HTTP 调用」的兜底。两个都要写 —— 只给 signal 的话，兜底就退回
-        到 `LLM_TIMEOUT_MS`（默认 300 秒），一旦 signal 那条路出任何意外，用户
-        等到的就是五分钟而不是八秒。两道闸各自能独立生效，才是想要的。
-      */
       { signal, maxTokens: PLAN_MAX_TOKENS, timeoutMs: PLAN_TIMEOUT_MS },
     );
 
@@ -219,6 +221,7 @@ export async function planQueries(
       disambiguators: clean(parsed.disambiguators),
       negatives: clean([...parsed.negatives, ...(opts.avoidPatterns ?? [])]),
       variants: pickVariants(parsed.variants, sites),
+      industries: industries && industries.length > 0 ? industries : undefined,
       source: "llm",
     };
   } catch (err) {
@@ -226,6 +229,7 @@ export async function planQueries(
       raw,
       err instanceof Error ? err.message : String(err),
       userIntent,
+      industries,
     );
   }
 }
@@ -255,6 +259,12 @@ export function variantFor(plan: SearchPlan, site: SiteKey): string {
   const related = (plan.relatedTerms ?? []).filter((term) => term.trim());
   if (related.length > 0) {
     clauses.push(`(${related.slice(0, 4).map((term) => `"${term.trim()}"`).join(" OR ")})`);
+  }
+
+  // 行业范围参与查询构建，缩小搜索范围
+  const indClause = industryClause(plan.industries);
+  if (indClause) {
+    clauses.push(indClause);
   }
 
   return clauses.join(" ");
@@ -358,20 +368,19 @@ export function lexicalPlan(
   raw: string,
   reason: string,
   userIntent?: string,
+  industries?: string[],
 ): SearchPlan {
   const intent = userIntent?.trim();
   return {
     raw,
     userIntent: intent || undefined,
     intent: intent ? `${raw}；${intent}` : raw,
-    // 原话就是这里的实体名。它不完美（原话可能是一整句话），但相关性判定
-    // 的判据是「判别性 token 一个都不出现」，一整句话同样能用 ——
-    // 只是比 LLM 给的那个更容易漏判，而漏判（不标记）正是安全的方向。
     entity: { name: raw, aliases: [] },
     disambiguators: [],
     negatives: [],
     relatedTerms: [],
     variants: {},
+    industries: industries && industries.length > 0 ? industries : undefined,
     source: "lexical",
     fallbackReason: reason,
   };

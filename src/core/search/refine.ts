@@ -115,8 +115,19 @@ export async function refineSession(
   const plan = await planQueries(session.topic.query, sites, {
     signal: opts.signal,
     intent: refinedIntent || undefined,
+    industries: session.searchOptions?.industries,
     avoidPatterns: avoidPatterns.length ? avoidPatterns : undefined,
   });
+
+  // 技术词累加：把前几轮与本轮识别到的新关联词/技术细节合并保存，深入扩展
+  const enrichedRelatedTerms = [
+    ...new Set([
+      ...(session.plan?.relatedTerms ?? []),
+      ...(plan.relatedTerms ?? []),
+      ...analysis.queries.slice(0, 4),
+    ]),
+  ].slice(0, 12);
+  plan.relatedTerms = enrichedRelatedTerms;
 
   const existingUrls = new Set(session.results.map((r) => normalizeUrl(r.url)));
   const search = await searchAll({
@@ -126,6 +137,7 @@ export async function refineSession(
     signal: opts.signal,
     timeRange: session.searchOptions?.timeRange,
     sortMode: session.searchOptions?.sortMode,
+    extraQueries: analysis.queries,
   });
 
   const added = applyAvoidPatterns(
