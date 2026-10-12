@@ -30,9 +30,10 @@ import { normalizeUrl } from "./normalize";
 import { filterByTime } from "./filter";
 import { signalMagnitude } from "@/core/signals";
 import { isDirectOnly } from "./sites";
-import { variantFor } from "./plan";
+import { queryVariantsFor, variantFor } from "./plan";
 import { lexicalRelevance, mergeRelevance } from "./relevance";
 import { judgeRelevance } from "./relevance-llm";
+import { classifySearchResults } from "./value";
 import { probeTopicProviders } from "./registry";
 
 /**
@@ -109,6 +110,8 @@ export interface OrchestrateOptions {
   sortMode?: SortMode;
   /** 每个站点一有结果就回调，用于 SSE 增量推送。 */
   onSiteDone?: (site: SiteKey, results: SearchResult[], log: ProviderLogEntry) => void;
+  /** 是否跳过较慢的 LLM 相关性及价值二次判别，用于节点快速深入搜索等交互场景 */
+  skipLlmJudgement?: boolean;
 }
 
 export interface OrchestrateResult {
@@ -251,57 +254,63 @@ export async function searchAll(
 
       // directOnly 的站点（HN/GitHub/arXiv）已经被 `.filter` 挡在外面了，
       // 走到这里的站点都该走一遍引擎链
+      const queryVariants = queryVariantsFor(plan, site, topic);
       for (const provider of chain) {
         if (!provider.capabilities.supportsSiteSyntax && site !== "web") continue;
 
         const t0 = Date.now();
-        try {
-          const results = await limiter(
-            provider.id,
-            CONCURRENCY[provider.id] ?? 3,
-          )(() =>
-            withRetry(() =>
-              provider.search(
-                {
-                  text: textFor(site),
-                  site,
-                  domain,
-                  limit: PER_SITE_LIMIT,
-                  timeRange,
-                  sortMode,
-                },
-                signal,
-              ),
-            ),
-          );
-          const ms = Date.now() - t0;
-          const log: ProviderLogEntry = {
-            provider: provider.id,
-            site,
-            ok: true,
-            count: results.length,
-            ms,
-          };
-          allLogs.push(log);
-          siteLogs.push(log);
-          collected.push(...results);
+        let providerCount = 0;
+        let providerError: string | undefined;
+        let providerOk = false;
 
-          if (results.length >= ENOUGH_RESULTS) break;
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          lastError = msg;
-          const entry: ProviderLogEntry = {
-            provider: provider.id,
-            site,
-            ok: false,
-            count: 0,
-            ms: Date.now() - t0,
-            error: msg,
-          };
-          allLogs.push(entry);
-          siteLogs.push(entry);
-          // 继续尝试链上的下一个 provider
+        /*
+          同一个 provider 连续尝试几条查询，直到拿到足够的候选或变体耗尽。
+          每条查询仍然是独立的 `withRetry`：一条查询被上游临时拒绝时，不能把
+          后面的短查询也一起判死；而日志按 provider 聚合，避免界面上出现五条
+          重复的 “searxng @知乎” 让用户误以为请求量爆炸。
+        */
+        for (const text of queryVariants) {
+          if (collected.length >= ENOUGH_RESULTS) break;
+          try {
+            const results = await limiter(
+              provider.id,
+              CONCURRENCY[provider.id] ?? 3,
+            )(() =>
+              withRetry(() =>
+                provider.search(
+                  {
+                    text,
+                    site,
+                    domain,
+                    limit: PER_SITE_LIMIT,
+                    timeRange,
+                    sortMode,
+                  },
+                  signal,
+                ),
+              ),
+            );
+            providerCount += results.length;
+            providerOk = true;
+            collected.push(...results);
+          } catch (err) {
+            providerError = err instanceof Error ? err.message : String(err);
+            lastError = providerError;
+          }
         }
+
+        const log: ProviderLogEntry = {
+          provider: provider.id,
+          site,
+          ok: providerOk,
+          count: providerCount,
+          ms: Date.now() - t0,
+          ...(providerOk ? {} : { error: providerError ?? "无结果" }),
+        };
+        allLogs.push(log);
+        siteLogs.push(log);
+
+        if (providerOk && collected.length >= ENOUGH_RESULTS) break;
       }
 
       // 站点专用 provider：与上面通用链的结果合并
@@ -458,15 +467,45 @@ export async function searchAll(
   const { kept, dropped, unknown } = filterByTime(ranked, timeRange);
 
   /*
-    相关性判定放在**最后**，两个理由：
+    相关性判定与价值预判放在**最后、且并行**，两个理由：
 
       1. 只为真正留下的那批付出代价 —— 时间筛掉的那些不必送模型
       2. `kept` 先按多源印证排序，模型看到的顺序就是用户先看到的顺序
 
+    两批送判互相独立（一个判切不切题，一个判像不像有实质内容），
+    `Promise.all` 并发让尾延迟取两者最大值而不是相加。没有 LLM 时
+    `classifySearchResults` 直接返回空表，行为与接入前逐字相同。
+
     判定完成后再做一次**仅 tie-breaker 的重排**：印证数仍然优先，
     关联度只在印证数和上游排名相同的情况下决定先后。
   */
-  const annotated = await annotateRelevance(kept, plan, signal);
+  let withValue = kept;
+  if (!opts.skipLlmJudgement) {
+    const [annotated, valueMap] = await Promise.all([
+      annotateRelevance(kept, plan, signal),
+      classifySearchResults(
+        kept,
+        topic,
+        plan?.userIntent ?? plan?.intent,
+        signal,
+      ),
+    ]);
+    withValue =
+      valueMap.size > 0
+        ? annotated.map((r) => {
+            const v = valueMap.get(r.id);
+            return v ? { ...r, value: v } : r;
+          })
+        : annotated;
+  } else if (plan) {
+    // 即使跳过 LLM 二次判定，本地极速的词法相关性判断依然保留
+    const lexical = new Map<string, Relevance>();
+    for (const r of kept) lexical.set(r.id, lexicalRelevance(r, plan));
+    withValue = kept.map((r) => {
+      const relevance = lexical.get(r.id);
+      return relevance ? { ...r, relevance } : r;
+    });
+  }
   /*
     关联度判定完成后，把默认排序再跑一遍。
 
@@ -477,8 +516,8 @@ export async function searchAll(
   */
   const results =
     sortMode === "relevant" || sortMode === undefined
-      ? rankResults(annotated, "relevant")
-      : annotated;
+      ? rankResults(withValue, "relevant")
+      : withValue;
 
   return { results, log: allLogs, timeFilter: { dropped, unknown } };
 }

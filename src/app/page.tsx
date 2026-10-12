@@ -18,6 +18,7 @@ import type {
   GraphModel,
   GraphNode,
   ProviderLogEntry,
+  RefinementRecord,
   SearchEvent,
   SearchPlan,
   SearchResult,
@@ -70,6 +71,22 @@ export default function Home() {
    */
   const [fetchNotice, setFetchNotice] = useState<string | null>(null);
   const [documents, setDocuments] = useState<Document[]>([]);
+  const [refining, setRefining] = useState(false);
+  const [refineNotice, setRefineNotice] = useState<string | null>(null);
+  /**
+   * 每轮「整理 + 补搜」的完整记录（summary/categories/missingAngles/…）。
+   *
+   * 不只是一个计数器：用户得看见 LLM 每轮都「看出了什么、补了什么词」，
+   * 否则补搜只是界面上一次黑盒抖动。记录从 session.refinements 恢复，
+   * 与磁盘一致。
+   */
+  const [refinements, setRefinements] = useState<RefinementRecord[]>([]);
+  const refineIteration = refinements.length;
+  const REFINE_MAX = 3;
+  /** 自动流水线（整理 → 补搜 → 抓取 → 再整理）是否在跑。 */
+  const [pipelining, setPipelining] = useState(false);
+  /** 流水线当前阶段，进度条之外的一句话。 */
+  const [pipelineStage, setPipelineStage] = useState<string | null>(null);
 
   const [building, setBuilding] = useState(false);
   const [graph, setGraph] = useState<GraphModel | null>(null);
@@ -77,6 +94,8 @@ export default function Home() {
   /** 构图成功、但有几篇没进图时的说明（与 graphError 互斥）。 */
   const [graphNotice, setGraphNotice] = useState<string | null>(null);
   const [selected, setSelected] = useState<GraphNode | null>(null);
+  /** 节点详情上的动作（删除 / 深入搜索 / 拓展节点）是否在进行中。 */
+  const [nodeAction, setNodeAction] = useState<"remove" | "search" | "expand" | null>(null);
   /** 当前打开的资料预览。文章走 Markdown，视频走平台播放器。 */
   const [previewDocument, setPreviewDocument] = useState<Document | null>(null);
   const [showDocuments, setShowDocuments] = useState(true);
@@ -134,6 +153,7 @@ export default function Home() {
         setLogs(session.providerLog);
         setGraph(session.graph ?? null);
         setSessionId(session.topic.id);
+        setRefinements(session.refinements ?? []);
         setViewState(session.viewState);
         // 「显示资料节点」也是会话状态的一部分，一并复原
         if (session.viewState?.showDocuments !== undefined) {
@@ -174,88 +194,228 @@ export default function Home() {
   );
 
   // ── 搜索 ──
+  /**
+   * 搜索的内部实现，接受外部 AbortSignal 与完成回调。
+   *
+   * 从 `runSearch` 抽出来而不是在 runSearch 里嵌 useRef 存 sessionId：
+   * 「一键调研」需要在同一个闭包里拿到刚搜出来的 sessionId 去调 /api/fetch，
+   * 而 React state 在 setSessionId 之后要到下一次渲染才生效 —— 回调里存
+   * 本地变量才是能立刻读到的真相。
+   */
+  const searchCore = useCallback(
+    async (signal: AbortSignal): Promise<{ sessionId: string; total: number } | null> => {
+      let sid: string | null = null;
+      let total = 0;
+
+      setSearching(true);
+      setSearchError(null);
+      // 新一轮搜索要清掉上一轮的所有产物，否则旧文档会混进新会话的图里
+      setResults([]);
+      setLogs([]);
+      setDocuments([]);
+      setGraph(null);
+      setSelected(null);
+      setSessionId(null);
+      setTimeFilter(null);
+      setSearchedAt(null);
+      setPlan(null);
+      setRefineNotice(null);
+      setRefinements([]);
+      // 位置是跟着**那张图**走的，换一轮主题就必须丢掉，
+      // 否则新图会沿用上一个主题的坐标（同 id 的节点会被钉在毫不相干的位置）
+      setViewState(undefined);
+
+      try {
+        await postSse<SearchEvent>(
+          "/api/search",
+          {
+            query: query.trim(),
+            intent: intent.trim() || undefined,
+            sites,
+            // 空串表示不限，服务端不认这个值，这里先归一成 undefined
+            timeRange: timeRange || undefined,
+            sortMode,
+          },
+          (e) => {
+            switch (e.type) {
+              case "results":
+                setResults((prev) => mergeResults(prev, e.results));
+                break;
+              case "provider":
+                setLogs((prev) => [...prev, e.log]);
+                break;
+              case "done":
+                sid = e.sessionId;
+                total = e.total;
+                setSessionId(e.sessionId);
+                setTimeFilter(e.timeFilter);
+                setSearchedAt(new Date().toISOString());
+                // 记住这一轮，刷新或重开页面时能接着用
+                localStorage.setItem(LAST_SESSION_KEY, e.sessionId);
+                break;
+              case "error":
+                setSearchError(e.message);
+                break;
+              case "plan":
+                setPlan(e.plan);
+                break;
+              case "relevance":
+                /*
+                  判定比结果晚到，所以这里是**补写**已有的那批结果，而不是追加。
+
+                  贴在 `results` 上（与服务端同形）而不是另存一个 map：这样
+                  结果列表、徽章、统计读的都是同一个 `r.relevance`/`r.value`，
+                  不会出现「两处各有一份、其中一处忘了更新」。
+                */
+                setResults((prev) =>
+                  prev.map((r) => {
+                    const relevance = e.verdicts[r.id];
+                    const value = e.values?.[r.id];
+                    if (!relevance && !value) return r;
+                    return {
+                      ...r,
+                      ...(relevance ? { relevance } : {}),
+                      ...(value ? { value } : {}),
+                    };
+                  }),
+                );
+                break;
+            }
+          },
+          signal,
+        );
+      } catch (err) {
+        if (!signal.aborted) setSearchError(errText(err));
+      } finally {
+        setSearching(false);
+      }
+
+      return sid ? { sessionId: sid, total } : null;
+    },
+    [query, intent, sites, timeRange, sortMode],
+  );
+
   const runSearch = useCallback(async () => {
     if (!query.trim() || searching) return;
-
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
     startedRef.current = true;
-
-    setSearching(true);
-    setSearchError(null);
-    // 新一轮搜索要清掉上一轮的所有产物，否则旧文档会混进新会话的图里
-    setResults([]);
-    setLogs([]);
-    setDocuments([]);
-    setGraph(null);
-    setSelected(null);
-    setSessionId(null);
-    setTimeFilter(null);
-    setSearchedAt(null);
-    setPlan(null);
-    // 位置是跟着**那张图**走的，换一轮主题就必须丢掉，
-    // 否则新图会沿用上一个主题的坐标（同 id 的节点会被钉在毫不相干的位置）
-    setViewState(undefined);
-
-    try {
-      await postSse<SearchEvent>(
-        "/api/search",
-        {
-          query: query.trim(),
-          intent: intent.trim() || undefined,
-          sites,
-          // 空串表示不限，服务端不认这个值，这里先归一成 undefined
-          timeRange: timeRange || undefined,
-          sortMode,
-        },
-        (e) => {
-          switch (e.type) {
-            case "results":
-              setResults((prev) => mergeResults(prev, e.results));
-              break;
-            case "provider":
-              setLogs((prev) => [...prev, e.log]);
-              break;
-            case "done":
-              setSessionId(e.sessionId);
-              setTimeFilter(e.timeFilter);
-              setSearchedAt(new Date().toISOString());
-              // 记住这一轮，刷新或重开页面时能接着用
-              localStorage.setItem(LAST_SESSION_KEY, e.sessionId);
-              break;
-            case "error":
-              setSearchError(e.message);
-              break;
-            case "plan":
-              setPlan(e.plan);
-              break;
-            case "relevance":
-              /*
-                判定比结果晚到，所以这里是**补写**已有的那批结果，而不是追加。
-
-                贴在 `results` 上（与服务端同形）而不是另存一个 map：这样
-                结果列表、徽章、统计读的都是同一个 `r.relevance`，
-                不会出现「两处各有一份、其中一处忘了更新」。
-              */
-              setResults((prev) =>
-                prev.map((r) =>
-                  e.verdicts[r.id] ? { ...r, relevance: e.verdicts[r.id] } : r,
-                ),
-              );
-              break;
-          }
-        },
-        ac.signal,
-      );
-    } catch (err) {
-      if (!ac.signal.aborted) setSearchError(errText(err));
-    } finally {
-      setSearching(false);
-    }
-  }, [query, intent, sites, searching, timeRange, sortMode]);
+    await searchCore(ac.signal);
+  }, [query, searching, searchCore]);
 
   // ── 抓取 ──
+  /**
+   * 抓取的内部实现。
+   *
+   * @param sid 目标会话 —— 显式传入而不是读 state：「一键调研」里搜索刚返回、
+   *   `sessionId` state 还没落地时就要抓，传参是同一闭包里唯一可靠的值。
+   * @param resultIds 只抓这几条搜索结果。省略则按默认规则抓（排除疑似不相关
+   *   与预判低价值）。显式给出时服务端**原样尊重**，不再做筛选 —— 这正是
+   *   「只重抓失败和低质的」和「手动勾选几条重抓」共用的恢复路径。
+   * @param signal 外部 AbortSignal，一键编排全程共用同一个。
+   *
+   * @returns 本次抓取后文档总数（含旧文档），0 表示没抓到可用正文。
+   */
+  const fetchCore = useCallback(
+    async (
+      sid: string,
+      resultIds: string[] | undefined,
+      signal: AbortSignal,
+    ): Promise<number> => {
+      setFetching(true);
+      setFetchProgress(null);
+      setFetchNotice(null);
+
+      // plan 事件给「跳过了几条」，done 事件才有「渲染了几篇」——
+      // 两条提示要能同时出现，所以这里把前一半先记下来，到 done 时一起合成
+      let skippedIrrelevant = 0;
+      let skippedLowValue = 0;
+      let skippedLowQuality = 0;
+      let docCount = 0;
+
+      try {
+        await postSse<FetchEvent>(
+          "/api/fetch",
+          resultIds && resultIds.length > 0
+            ? { sessionId: sid, resultIds }
+            : { sessionId: sid },
+          (e) => {
+            switch (e.type) {
+              case "plan":
+                setFetchProgress({ done: 0, total: e.total });
+                skippedIrrelevant = e.skippedIrrelevant;
+                skippedLowValue = e.skippedLowValue ?? 0;
+                skippedLowQuality = e.skippedLowQuality ?? 0;
+                setFetchNotice(
+                  fetchNoticeText(
+                    skippedIrrelevant,
+                    skippedLowValue,
+                    skippedLowQuality,
+                    0,
+                  ),
+                );
+                break;
+              case "doc":
+                setFetchProgress({ done: e.done, total: e.total });
+                setDocuments((prev) => [
+                  ...prev.filter((d) => d.url !== e.doc.url),
+                  e.doc,
+                ]);
+                break;
+              case "done":
+                docCount = e.documents;
+                setFetchNotice(
+                  fetchNoticeText(
+                    skippedIrrelevant,
+                    skippedLowValue,
+                    skippedLowQuality,
+                    e.byMethod.playwright,
+                    e.lowValue,
+                  ),
+                );
+                /*
+                  价值分类是在**全部抓完之后**才跑的（那时才有完整正文），
+                  所以上面逐条推来的 `doc` 事件里没有 category / lowValue。
+                  这里整份重读一次会话，把分类结果补进列表 —— 不重读的话，
+                  界面上永远看不到「已按类别分组」和「低价值」标记。
+                */
+                void (async () => {
+                  try {
+                    const res = await fetch(
+                      `/api/session?id=${encodeURIComponent(e.sessionId)}`,
+                      { cache: "no-store" },
+                    );
+                    if (!res.ok) return;
+                    const data = (await res.json()) as { session?: Session };
+                    if (data.session?.documents) {
+                      setDocuments(data.session.documents);
+                      docCount = data.session.documents.length;
+                    }
+                  } catch {
+                    // 刷新失败只影响分类显示，资料本身已经落盘，不值得弹错
+                  }
+                })();
+                break;
+              case "error":
+                setSearchError(e.message);
+                break;
+            }
+          },
+          signal,
+        );
+      } catch (err) {
+        if (!signal.aborted) setSearchError(errText(err));
+      } finally {
+        setFetching(false);
+        setFetchProgress(null);
+      }
+
+      return docCount;
+    },
+    [],
+  );
+
   /**
    * @param resultIds 只抓这几条搜索结果。省略则按默认规则抓（排除疑似不相关）。
    *   显式给出时服务端**原样尊重**，不再做相关性筛选 —— 这正是「只重抓失败
@@ -264,127 +424,467 @@ export default function Home() {
    *   注意这个参数**不能**直接挂到 `onClick` 上：React 会把事件对象当第一个
    *   实参传进来。调用方要么包一层 `() => runFetch()`，要么显式传数组。
    */
-  const runFetch = useCallback(async (resultIds?: string[]) => {
-    if (!sessionId || fetching) return;
+  const runFetch = useCallback(
+    async (resultIds?: string[]) => {
+      if (!sessionId || fetching) return;
+      abortRef.current?.abort();
+      const ac = new AbortController();
+      abortRef.current = ac;
+      await fetchCore(sessionId, resultIds, ac.signal);
+    },
+    [sessionId, fetching, fetchCore],
+  );
+
+  // ── 整理 + 受控补搜 ──
+  /**
+   * /api/refine 响应的类型。`record` 与 `Session.refinements` 的元素同形 —
+   * 服务端把整份 RefinementRecord 原样回传，前端直接收进数组就能展示。
+   */
+  type RefineResponse = {
+    error?: string;
+    done?: boolean;
+    message?: string;
+    record?: RefinementRecord;
+    results?: SearchResult[];
+    plan?: SearchPlan;
+    maxIterations?: number;
+  };
+
+  /**
+   * 发起一轮「整理 + 补搜」。
+   *
+   * @returns `{record, added}`：record 为 null 表示已达上限或出错（此时
+   *   `done`/`message` 里有原因）；added 是本轮补搜出的新结果（已经过
+   *   相关性 + 价值预判标记）。
+   */
+  const refineCore = useCallback(
+    async (
+      sid: string,
+      signal?: AbortSignal,
+    ): Promise<{ record: RefinementRecord | null; added: SearchResult[]; done?: boolean; message?: string }> => {
+      const res = await fetch("/api/refine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: sid }),
+        signal,
+      });
+      const data = (await res.json()) as RefineResponse;
+
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      if (data.done || !data.record) {
+        return {
+          record: null,
+          added: [],
+          done: true,
+          message: data.message ?? "已达到补搜轮次上限",
+        };
+      }
+
+      const record = data.record;
+      setRefinements((prev) => [
+        ...prev.filter((r) => r.iteration !== record.iteration),
+        record,
+      ]);
+      setPlan(data.plan ?? null);
+      const added = data.results ?? [];
+      if (added.length) setResults((prev) => mergeResults(prev, added));
+
+      return { record, added };
+    },
+    [],
+  );
+
+  const runRefine = useCallback(async () => {
+    if (!sessionId || refining || fetching || searching) return;
+    setRefining(true);
+    setRefineNotice(null);
+    setSearchError(null);
+
+    try {
+      const { record, done, message } = await refineCore(sessionId);
+      if (!record) {
+        setRefineNotice(message ?? (done ? "已达到补搜轮次上限" : "整理失败"));
+        return;
+      }
+      setRefineNotice(
+        `第 ${record.iteration} 轮整理：${record.summary} ` +
+          `新增 ${record.added} 条候选` +
+          (record.missingAngles.length
+            ? `；补搜角度：${record.missingAngles.slice(0, 3).join("、")}`
+            : ""),
+      );
+    } catch (err) {
+      setSearchError(errText(err));
+    } finally {
+      setRefining(false);
+    }
+  }, [sessionId, refining, fetching, searching, refineCore]);
+
+  /**
+   * 自动流水线：整理 → 补搜 → 抓取新增 → 再整理，最多 REFINE_MAX 轮。
+   *
+   * 每一轮四段各自独立：
+   *   1. 整理 —— LLM 看已抓正文，产出分类、缺口与补搜词（/api/refine）
+   *   2. 补搜 —— 沿用站点、相关性/价值判定与去重，只报新增结果
+   *   3. 过滤 —— 判死（unlikely / 预判 low）的新结果不花抓取成本，但计数说出来
+   *   4. 抓取 —— 只抓这一轮新增且没被过滤的，老资料一个字节都不重下
+   *
+   * 轮数上限与手动按钮共用 REFINE_MAX：两条路径各算各的话，用户先点手动
+   * 再点自动，实际迭代次数会翻倍。任何一段失败都停下并保留已完成的轮次。
+   *
+   * @param sid 显式会话 —— 「一键调研」搜索刚返回时 `sessionId` state 还没落地。
+   * @param signal 外部 AbortSignal；不传则自建并挂到 abortRef（独立按钮场景）。
+   */
+  const pipelineCore = useCallback(
+    async (
+      sid: string,
+      signal: AbortSignal,
+      stagePrefix: string,
+    ): Promise<{ rounds: number; addedTotal: number; fetchedTotal: number }> => {
+      let rounds = 0;
+      let addedTotal = 0;
+      let fetchedTotal = 0;
+
+      for (let round = 1; round <= REFINE_MAX; round++) {
+        setPipelineStage(`${stagePrefix}整理已抓正文…`);
+        const { record, added, done, message } = await refineCore(sid, signal);
+        if (!record) {
+          if (done) setRefineNotice(message ?? "已达到整理补搜轮次上限");
+          break;
+        }
+
+        rounds = record.iteration;
+        addedTotal += added.length;
+
+        /*
+          过滤。判定是服务端在 searchAll 里做完才回来的，这里只按 verdict
+          分拣：判死（不相关/预判低价值）的不抓；uncertain 与未预判的照抓 ——
+          本地规则拿不准时宁可多抓一条，也不能因为拿不准就丢掉一份可能有用的资料。
+        */
+        const fetchable = added.filter(
+          (r) =>
+            r.relevance?.verdict !== "unlikely" && r.value?.verdict !== "low",
+        );
+        const skipped = added.length - fetchable.length;
+
+        setRefineNotice(
+          `第 ${record.iteration} 轮：${record.summary} ` +
+            `新增 ${added.length} 条` +
+            (skipped > 0 ? `，其中 ${skipped} 条判为不相关或低价值、跳过抓取` : ""),
+        );
+
+        if (fetchable.length === 0) break;
+
+        setPipelineStage(
+          `${stagePrefix}抓取新增的 ${fetchable.length} 篇正文…`,
+        );
+        await fetchCore(
+          sid,
+          fetchable.map((r) => r.id),
+          signal,
+        );
+        fetchedTotal += fetchable.length;
+
+        // 补搜一条都没带回来 —— 再跑一轮只会重复同样的查询
+        if (added.length === 0) break;
+      }
+
+      return { rounds, addedTotal, fetchedTotal };
+    },
+    [fetchCore, refineCore],
+  );
+
+  const runPipeline = useCallback(async () => {
+    if (!sessionId || pipelining || searching || fetching || refining) return;
+    setPipelining(true);
+    setSearchError(null);
+    setRefineNotice(null);
+
+    const ac = new AbortController();
+    abortRef.current = ac;
+
+    try {
+      const { rounds, addedTotal, fetchedTotal } = await pipelineCore(
+        sessionId,
+        ac.signal,
+        "",
+      );
+      if (rounds > 0) {
+        setRefineNotice(
+          `流水线完成：${rounds}/${REFINE_MAX} 轮，新增 ${addedTotal} 条结果、` +
+            `抓取 ${fetchedTotal} 篇正文。可以继续「构建知识拓扑」，或下载与预览。`,
+        );
+      }
+    } catch (err) {
+      if (!ac.signal.aborted) setSearchError(errText(err));
+    } finally {
+      setPipelining(false);
+      setPipelineStage(null);
+    }
+  }, [sessionId, pipelining, searching, fetching, refining, pipelineCore]);
+
+  // ── 构图 ──
+  /**
+   * 构图的内部实现，显式收会话 id —— 与 fetchCore/refineCore 同一理由：
+   * 「一键调研」的同一闭包里 `sessionId` state 还没落地。
+   */
+  const buildGraphCore = useCallback(
+    async (sid: string): Promise<boolean> => {
+      setBuilding(true);
+      setGraphError(null);
+      setGraphNotice(null);
+      setSelected(null);
+
+      try {
+        const res = await fetch("/api/graph", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId: sid }),
+        });
+
+        const data = (await res.json()) as {
+          graph?: GraphModel;
+          error?: string;
+          usedDocuments?: number;
+          ignoredDocuments?: number;
+          ignoredIrrelevant?: number;
+          ignoredLowValue?: number;
+          tokenizer?: string;
+        };
+
+        if (!res.ok || !data.graph) {
+          // 路由用 409 表达「正文不够，无法构图」，这不算错误而是一种状态，
+          // 用户看到原因就够了
+          setGraphError(data.error ?? `HTTP ${res.status}`);
+          setGraphNotice(null);
+          return false;
+        }
+
+        setGraph(data.graph);
+        /*
+          把「有几篇没进图」说出来。
+
+          图是这批资料的一张结构图，读者看不见图里少了什么 —— 不说的话，
+          一篇跑题资料被排除这件事在界面上就是**静默发生**的，正好违反这套
+          系统「绝不静默丢东西」的主张。所以这里照实报数，并说清它们在哪。
+        */
+        const ignoredIrrelevant = data.ignoredIrrelevant ?? 0;
+        const ignoredLowValue = data.ignoredLowValue ?? 0;
+        const reasons: string[] = [];
+        if (ignoredIrrelevant > 0) {
+          reasons.push(`${ignoredIrrelevant} 篇疑似与主题不相关`);
+        }
+        if (ignoredLowValue > 0) {
+          reasons.push(`${ignoredLowValue} 篇被整理判为低价值`);
+        }
+        setGraphNotice(
+          reasons.length > 0
+            ? `有 ${reasons.join("、")} 的资料没有进图（它们仍在列表里，也逐条记在报告的「未收录」一节）`
+            : null,
+        );
+        setShowDocuments(true);
+        // 重构图产出的是一张新的图（节点集合可能完全不同），旧坐标不该沿用
+        setViewState(undefined);
+        return true;
+      } catch (err) {
+        setGraphError(errText(err));
+        return false;
+      } finally {
+        setBuilding(false);
+      }
+    },
+    [],
+  );
+
+  const runBuildGraph = useCallback(async () => {
+    if (!sessionId || building) return;
+    await buildGraphCore(sessionId);
+  }, [sessionId, building, buildGraphCore]);
+
+  /**
+   * 一键调研：搜索 → 抓取 → 整理补搜循环 → 构图，一条命令跑完。
+   *
+   * ── 为什么要抽 core 函数而不是串四个 runXxx ──
+   *
+   * runSearch 完成后 `setSessionId` 要等下一次渲染才生效，紧接着调
+   * runFetch 读到的还是 null —— 同一个闭包里 React state 不会「立刻变」。
+   * 所以每个阶段都有 core 版本，显式收 `sid` 参数；runXxx 只是薄壳。
+   *
+   * 全程共用同一个 AbortController（与「一键流水线」同一份 `pipelining`
+   * 状态）：用户在任意阶段按 Esc/关页面，整条链都在下一步之前停住，
+   * 已完成的产物（搜索结果/正文/整理记录）都留在界面上。
+   */
+  const runResearch = useCallback(async () => {
+    if (!query.trim() || pipelining || searching || fetching || refining || building) {
+      return;
+    }
 
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
+    startedRef.current = true;
 
-    setFetching(true);
-    setFetchProgress(null);
-    setFetchNotice(null);
-
-    // plan 事件给「跳过了几条不相关的」，done 事件才有「渲染了几篇」——
-    // 两条提示要能同时出现，所以这里把前一半先记下来，到 done 时一起合成
-    let skippedIrrelevant = 0;
-    let skippedLowQuality = 0;
+    setPipelining(true);
+    setSearchError(null);
+    setRefineNotice(null);
 
     try {
-      await postSse<FetchEvent>(
-        "/api/fetch",
-        resultIds && resultIds.length > 0 ? { sessionId, resultIds } : { sessionId },
-        (e) => {
-          switch (e.type) {
-            case "plan":
-              setFetchProgress({ done: 0, total: e.total });
-              skippedIrrelevant = e.skippedIrrelevant;
-              skippedLowQuality = e.skippedLowQuality ?? 0;
-              setFetchNotice(
-                fetchNoticeText(skippedIrrelevant, skippedLowQuality, 0),
-              );
-              break;
-            case "doc":
-              setFetchProgress({ done: e.done, total: e.total });
-              setDocuments((prev) => [
-                ...prev.filter((d) => d.url !== e.doc.url),
-                e.doc,
-              ]);
-              break;
-            case "done":
-              setFetchNotice(
-                fetchNoticeText(
-                  skippedIrrelevant,
-                  skippedLowQuality,
-                  e.byMethod.playwright,
-                ),
-              );
-              break;
-            case "error":
-              setSearchError(e.message);
-              break;
-          }
-        },
-        ac.signal,
-      );
-    } catch (err) {
-      if (!ac.signal.aborted) setSearchError(errText(err));
-    } finally {
-      setFetching(false);
-      setFetchProgress(null);
-    }
-  }, [sessionId, fetching]);
+      // 1. 搜索 + 价值预判（预判与相关性判定在服务端并发跑，不占额外时间）
+      setPipelineStage("1/4 · 搜索与价值预判…");
+      const searched = await searchCore(ac.signal);
+      if (!searched || searched.total === 0) {
+        setPipelineStage(null);
+        setSearchError(
+          searched ? "搜索没有返回结果，调研终止" : "搜索未完成，调研终止",
+        );
+        return;
+      }
+      const sid = searched.sessionId;
 
-  // ── 构图 ──
-  const runBuildGraph = useCallback(async () => {
-    if (!sessionId || building) return;
-    setBuilding(true);
-    setGraphError(null);
-    setGraphNotice(null);
-    setSelected(null);
-
-    try {
-      const res = await fetch("/api/graph", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId }),
-      });
-
-      const data = (await res.json()) as {
-        graph?: GraphModel;
-        error?: string;
-        usedDocuments?: number;
-        ignoredDocuments?: number;
-        ignoredIrrelevant?: number;
-        tokenizer?: string;
-      };
-
-      if (!res.ok || !data.graph) {
-        // 路由用 409 表达「正文不够，无法构图」，这不算错误而是一种状态，
-        // 用户看到原因就够了
-        setGraphError(data.error ?? `HTTP ${res.status}`);
-        setGraphNotice(null);
+      // 2. 抓取首批正文（走完整 pickTargets：不相关 + 预判低价值 + 质量闸门）
+      setPipelineStage("2/4 · 抓取首批正文…");
+      const docCount = await fetchCore(sid, undefined, ac.signal);
+      if (ac.signal.aborted) return;
+      if (docCount === 0) {
+        setPipelineStage(null);
+        setRefineNotice(
+          "没有抓到可用正文（全被过滤或抓取失败）。可以在列表里勾选条目单独重试，或直接构图。",
+        );
         return;
       }
 
-      setGraph(data.graph);
-      /*
-        把「有几篇没进图」说出来。
-
-        图是这批资料的一张结构图，读者看不见图里少了什么 —— 不说的话，
-        一篇跑题资料被排除这件事在界面上就是**静默发生**的，正好违反这套
-        系统「绝不静默丢东西」的主张。所以这里照实报数，并说清它们在哪。
-      */
-      const ignored = data.ignoredIrrelevant ?? 0;
-      setGraphNotice(
-        ignored > 0
-          ? `有 ${ignored} 篇正文完整、但疑似与主题不相关的资料没有进图（它们仍在右侧列表里，也逐条记在报告的「未收录」一节）`
-          : null,
+      // 3. 整理 → 补搜 → 抓取新增的循环（与「一键流水线」同一套逻辑）
+      const { rounds } = await pipelineCore(
+        sid,
+        ac.signal,
+        "3/4 · ",
       );
-      setShowDocuments(true);
-      // 重构图产出的是一张新的图（节点集合可能完全不同），旧坐标不该沿用
-      setViewState(undefined);
+      if (ac.signal.aborted) return;
+
+      // 4. 自动构图
+      setPipelineStage("4/4 · 构建知识拓扑…");
+      await buildGraphCore(sid);
+
+      if (rounds > 0) {
+        setRefineNotice(
+          `调研完成：搜索 → 抓取 → ${rounds}/${REFINE_MAX} 轮整理补搜 → 拓扑已就绪。`,
+        );
+      } else {
+        setRefineNotice("调研完成：拓扑已就绪。可以预览资料、下载，或继续补搜。");
+      }
     } catch (err) {
-      setGraphError(errText(err));
+      if (!ac.signal.aborted) setSearchError(errText(err));
     } finally {
-      setBuilding(false);
+      setPipelining(false);
+      setPipelineStage(null);
     }
-  }, [sessionId, building]);
+  }, [
+    query,
+    pipelining,
+    searching,
+    fetching,
+    refining,
+    building,
+    searchCore,
+    fetchCore,
+    pipelineCore,
+    buildGraphCore,
+  ]);
 
   const siteCounts = new Map<SiteKey, number>();
   for (const r of results) {
     siteCounts.set(r.site, (siteCounts.get(r.site) ?? 0) + 1);
   }
+
+  // ── 节点动作：删除 / 深入搜索 / 拓展节点 ──
+  const runNodeAction = useCallback(
+    async (
+      action: "remove" | "search" | "expand",
+      node: GraphNode,
+      extraTerms?: string[],
+    ) => {
+      if (!sessionId || nodeAction) return;
+      setNodeAction(action);
+      setSearchError(null);
+      try {
+        const res = await fetch("/api/graph/node", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId, nodeId: node.id, action, extraTerms }),
+        });
+        const data = (await res.json()) as {
+          error?: string;
+          graph?: GraphModel;
+          removed?: { nodes: string[]; documents: string[] };
+          added?: SearchResult[];
+          addedDocs?: Document[];
+          expanded?: GraphNode[];
+          edges?: unknown[];
+        };
+        if (!res.ok) {
+          setSearchError(data.error ?? `HTTP ${res.status}`);
+          return;
+        }
+        if (action === "remove") {
+          setGraph(data.graph ?? null);
+          setSelected(null);
+          if (data.removed) {
+            const n = data.removed.documents.length;
+            setGraphNotice(
+              n > 0
+                ? `已删除节点及其 ${n} 篇独占资料；被其它节点引用的资料保留`
+                : "已从图中移除该节点；关联资料仍被其它节点引用，已保留",
+            );
+          }
+          if (data.removed?.documents.length) {
+            const gone = new Set(data.removed.documents);
+            setDocuments((prev) => prev.filter((d) => !gone.has(d.id)));
+            setResults((prev) => prev.filter((r) => !gone.has(r.id)));
+          }
+        } else if (action === "expand") {
+          if (data.graph) setGraph(data.graph);
+          if (data.added?.length) setResults((prev) => mergeResults(prev, data.added ?? []));
+          if (data.addedDocs?.length) {
+            setDocuments((prev) => {
+              const existingIds = new Set(prev.map((d) => d.id));
+              const fresh = (data.addedDocs ?? []).filter((d) => !existingIds.has(d.id));
+              return [...prev, ...fresh];
+            });
+          }
+          const expCount = data.expanded?.length ?? 0;
+          const docCount = data.addedDocs?.length ?? 0;
+          setGraphNotice(
+            `已为「${node.label}」在拓扑中补充 ${expCount} 个关联技术节点，补充 ${docCount} 篇支撑资料。`,
+          );
+        } else {
+          // search: 深入搜索
+          if (data.graph) setGraph(data.graph);
+          if (data.added?.length) setResults((prev) => mergeResults(prev, data.added ?? []));
+          if (data.addedDocs?.length) {
+            setDocuments((prev) => {
+              const existingIds = new Set(prev.map((d) => d.id));
+              const fresh = (data.addedDocs ?? []).filter((d) => !existingIds.has(d.id));
+              return [...prev, ...fresh];
+            });
+          }
+          const addedLen = data.added?.length ?? 0;
+          const docsLen = data.addedDocs?.length ?? 0;
+          if (addedLen > 0) {
+            setGraphNotice(
+              `深入搜索「${node.label}」新增 ${addedLen} 条结果${docsLen > 0 ? `，并补充了 ${docsLen} 篇正文材料` : ""}。`,
+            );
+          } else {
+            setGraphNotice(`围绕「${node.label}」没有搜到新结果`);
+          }
+        }
+      } catch (err) {
+        setSearchError(errText(err));
+      } finally {
+        setNodeAction(null);
+      }
+    },
+    [sessionId, nodeAction],
+  );
 
   return (
     <div className="app">
@@ -534,6 +1034,16 @@ export default function Home() {
               graphError={graphError}
               graphNotice={graphNotice}
               hasGraph={graph !== null}
+              onRefine={() => void runRefine()}
+              refining={refining}
+              refineNotice={refineNotice}
+              refinements={refinements}
+              refineIteration={refineIteration}
+              refineMax={REFINE_MAX}
+              onPipeline={() => void runPipeline()}
+              onResearch={() => void runResearch()}
+              pipelining={pipelining}
+              pipelineStage={pipelineStage}
             />
           )}
 
@@ -553,6 +1063,8 @@ export default function Home() {
                 showDocuments={showDocuments}
                 initialView={viewState}
                 onViewChange={handleViewChange}
+                documents={documents}
+                onOpenDocument={setPreviewDocument}
               />
             ) : (
               <div className="empty">
@@ -591,6 +1103,10 @@ export default function Home() {
                   onOpenDocument={(doc) =>
                     setPreviewDocument(doc)
                   }
+                  onDeleteNode={(n) => void runNodeAction("remove", n)}
+                  onDeepSearch={(n) => void runNodeAction("search", n)}
+                  onExpandNode={(n, terms) => void runNodeAction("expand", n, terms)}
+                  nodeAction={nodeAction}
                 />
               ) : (
                 <p className="dim" style={{ fontSize: 12 }}>
@@ -620,6 +1136,7 @@ export default function Home() {
         {previewDocument && (
           <DocumentPreview
             document={previewDocument}
+            sessionId={sessionId ?? undefined}
             onClose={() => setPreviewDocument(null)}
           />
         )}
@@ -679,8 +1196,10 @@ function errText(err: unknown): string {
  */
 function fetchNoticeText(
   skippedIrrelevant: number,
+  skippedLowValue: number,
   skippedLowQuality: number,
   playwright: number,
+  lowValue?: number,
 ): string | null {
   const parts: string[] = [];
   if (skippedIrrelevant > 0) {
@@ -689,12 +1208,23 @@ function fetchNoticeText(
         `想抓的话在结果里勾选这几条，再点一次抓取）`,
     );
   }
+  if (skippedLowValue > 0) {
+    parts.push(
+      `已跳过 ${skippedLowValue} 条预判低价值的结果（仅凭标题与摘要；` +
+        `在结果里勾选可以单独补抓）`,
+    );
+  }
   if (playwright > 0) {
     parts.push(`本次会话已有 ${playwright} 篇靠无头浏览器渲染拿到正文`);
   }
   if (skippedLowQuality > 0) {
     parts.push(
       `质量过滤层已跳过 ${skippedLowQuality} 条明显无用/低质候选（候选不足时会自动补回低质链接）`,
+    );
+  }
+  if (lowValue && lowValue > 0) {
+    parts.push(
+      `整理阶段将 ${lowValue} 篇正文判为低价值（只标记不删除：它们不进拓扑，但仍可预览与下载）`,
     );
   }
   return parts.length ? parts.join("；") : null;

@@ -92,7 +92,10 @@ export async function POST(req: NextRequest) {
       !d.error &&
       d.extractMethod !== "raw" &&
       d.wordCount >= 30 &&
-      d.relevance?.verdict !== "unlikely",
+      d.relevance?.verdict !== "unlikely" &&
+      // 价值低的不进图：图是「这个主题的结构」，一堆标题党会往里塞
+      // 一堆只在标题里出现过的假概念。只标记不删除，列表与报告照常保留。
+      !d.lowValue,
   );
   const ignoredIrrelevant = session.documents.filter(
     (d) =>
@@ -100,6 +103,14 @@ export async function POST(req: NextRequest) {
       d.extractMethod !== "raw" &&
       d.wordCount >= 30 &&
       d.relevance?.verdict === "unlikely",
+  ).length;
+  const ignoredLowValue = session.documents.filter(
+    (d) =>
+      !d.error &&
+      d.extractMethod !== "raw" &&
+      d.wordCount >= 30 &&
+      d.relevance?.verdict !== "unlikely" &&
+      Boolean(d.lowValue),
   ).length;
 
   if (usable.length === 0) {
@@ -137,6 +148,8 @@ export async function POST(req: NextRequest) {
       ignoredDocuments: session.documents.length - usable.length,
       /** 其中有多少篇是「正文没问题、只是疑似不相关」才没进图的。 */
       ignoredIrrelevant,
+      /** 其中有多少篇是整理阶段判为低价值才没进图的。 */
+      ignoredLowValue,
     });
   } catch (err) {
     return Response.json(

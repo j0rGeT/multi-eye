@@ -7,6 +7,7 @@ import type {
   Session,
   TimeRange,
   Topic,
+  ValueAssessment,
 } from "@/core/types";
 import { searchAll } from "@/core/search/orchestrate";
 import { TIME_RANGE_MS } from "@/core/search/filter";
@@ -126,8 +127,12 @@ export async function POST(req: NextRequest) {
       流式的本意：能先给的先给。
     */
     const verdicts: Record<string, Relevance> = {};
-    for (const r of results) if (r.relevance) verdicts[r.id] = r.relevance;
-    emit({ type: "relevance", verdicts });
+    const values: Record<string, ValueAssessment> = {};
+    for (const r of results) {
+      if (r.relevance) verdicts[r.id] = r.relevance;
+      if (r.value) values[r.id] = r.value;
+    }
+    emit({ type: "relevance", verdicts, values });
 
     // 落盘完整快照。文档为空 —— 正文抓取是独立的一步，由 /api/fetch 触发，
     // 这样用户可以只搜不抓，避免为不需要的资料付出抓取成本。

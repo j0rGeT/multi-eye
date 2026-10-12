@@ -10,6 +10,7 @@ import { extractMany } from "@/core/fetch/extract";
 import { filterFetchCandidates } from "@/core/fetch/quality";
 import { config } from "@/core/env";
 import { findDuplicates, markDuplicates } from "@/core/search/dedupe";
+import { classifyDocuments } from "@/core/search/value";
 import { loadSession, saveSession } from "@/core/store";
 import { sseResponse } from "@/core/sse";
 
@@ -31,6 +32,14 @@ interface FetchBody {
    * 的说明。显式传了 `resultIds` 时这个开关没有意义（那批本来就不筛）。
    */
   includeIrrelevant?: boolean;
+  /**
+   * 连搜索阶段预判为低价值的也抓。
+   *
+   * 默认 false —— 价值预判只凭标题与摘要，判错的代价由 `reason` 字段留在
+   * 结果上供用户核查；而显式 `resultIds` 点名时不读这个字段（同
+   * `includeIrrelevant` 的豁免语义）。
+   */
+  includeLowValue?: boolean;
 }
 
 /**
@@ -62,10 +71,8 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: `会话不存在：${sessionId}` }, { status: 404 });
   }
 
-  const { targets, skippedIrrelevant, skippedLowQuality } = pickTargets(
-    session.results,
-    body,
-  );
+  const { targets, skippedIrrelevant, skippedLowValue, skippedLowQuality } =
+    pickTargets(session.results, body);
 
   return sseResponse<FetchEvent>(async (emit) => {
     emit({
@@ -73,6 +80,7 @@ export async function POST(req: NextRequest) {
       total: targets.length,
       skipped: session.results.length - targets.length,
       skippedIrrelevant,
+      skippedLowValue,
       skippedLowQuality,
     });
 
@@ -123,19 +131,47 @@ export async function POST(req: NextRequest) {
     const dupes = await findDuplicates(deduped);
     const marked = markDuplicates(deduped, dupes);
 
+    /*
+      价值分类。**放在抓取之后**：搜索阶段只有标题与摘要，判「值不值得留」
+      纯属猜；抓到正文才有判据。
+
+      失败/没配 key 时 `classifyDocuments` 返回空表，文档原样保留 —— 分类是
+      整理视图的加分项，不能变成抓取链上的单点故障。
+    */
+    const values = await classifyDocuments(
+      marked,
+      session.topic.query,
+      session.topic.intent,
+      req.signal,
+    );
+    const assessed = values.size
+      ? marked.map((doc) => {
+          const v = values.get(doc.id);
+          return v
+            ? {
+                ...doc,
+                category: v.category,
+                ...(v.verdict === "low" ? { lowValue: { reason: v.reason } } : {}),
+              }
+            : doc;
+        })
+      : marked;
+
     await saveSession({
       ...session,
       topic: { ...session.topic, updatedAt: new Date().toISOString() },
-      documents: marked,
+      documents: assessed,
     });
 
     emit({
       type: "done",
       sessionId,
-      documents: marked.length,
-      byMethod: tally(marked),
+      documents: assessed.length,
+      byMethod: tally(assessed),
       filteredLowQuality: skippedLowQuality,
+      lowValue: assessed.filter((d) => d.lowValue).length,
     });
+
   }, req.signal);
 }
 
@@ -162,6 +198,7 @@ function pickTargets(
 ): {
   targets: SearchResult[];
   skippedIrrelevant: number;
+  skippedLowValue: number;
   skippedLowQuality: number;
 } {
   let picked: SearchResult[];
@@ -177,21 +214,50 @@ function pickTargets(
   }
 
   if (body.resultIds?.length) {
-    // 用户点名的链接不经过质量闸门：他的明确选择优先于任何自动规则。
-    return { targets: picked, skippedIrrelevant: 0, skippedLowQuality: 0 };
+    // 用户点名的链接不经过任何闸门：他的明确选择优先于任何自动规则。
+    return {
+      targets: picked,
+      skippedIrrelevant: 0,
+      skippedLowValue: 0,
+      skippedLowQuality: 0,
+    };
   }
 
   const relevant = body.includeIrrelevant
     ? picked
     : picked.filter((r) => r.relevance?.verdict !== "unlikely");
   const skippedIrrelevant = picked.length - relevant.length;
-  const quality = filterFetchCandidates(relevant, {
+
+  /*
+    价值预判（low）排在相关性之后、质量闸门之前。
+
+    与 relevance 同一立场：`undefined` 一律放行，只有 `verdict === "low"`
+    才跳过 —— 「没预判过」和「预判成没价值」是两回事。
+
+    安全阀：模型可能把整批摘要都判成 low（摘要本来就薄）。如果过滤后
+    剩下的不足三条，按原排名补回一部分 —— 让抓取空跑的损失远大于
+    多抓几条低价值候选。
+  */
+  const valued = body.includeLowValue
+    ? relevant
+    : relevant.filter((r) => r.value?.verdict !== "low");
+  let afterValue = valued;
+  const floor = Math.min(3, relevant.length);
+  if (!body.includeLowValue && valued.length < floor) {
+    const kept = new Set(valued.map((r) => r.id));
+    const backfill = relevant.filter((r) => !kept.has(r.id));
+    afterValue = [...valued, ...backfill.slice(0, floor - valued.length)];
+  }
+  const skippedLowValue = relevant.length - afterValue.length;
+
+  const quality = filterFetchCandidates(afterValue, {
     minTargets: config.fetchMinTargets,
   });
 
   return {
     targets: quality.targets,
     skippedIrrelevant,
+    skippedLowValue,
     skippedLowQuality: quality.skippedLowQuality,
   };
 }

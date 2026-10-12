@@ -34,7 +34,7 @@ import { chatJson } from "@/core/llm/chat";
  * 再挂一个更长的前置等待，用户会以为卡住了。超时就退化成不改写 ——
  * 慢一点比没有结果好，但没有结果比慢一点更糟。
  */
-const PLAN_TIMEOUT_MS = Number(process.env.PLAN_TIMEOUT_MS ?? 8_000);
+const PLAN_TIMEOUT_MS = Number(process.env.PLAN_TIMEOUT_MS ?? 15_000);
 
 /**
  * 分析用的输出上限。
@@ -44,6 +44,15 @@ const PLAN_TIMEOUT_MS = Number(process.env.PLAN_TIMEOUT_MS ?? 8_000);
  * 4096 是留了余量的估计，实测不够就调 PLAN_MAX_TOKENS。
  */
 const PLAN_MAX_TOKENS = Number(process.env.PLAN_MAX_TOKENS ?? 4_096);
+
+/**
+ * 单个站点最多尝试多少个查询变体。
+ *
+ * 一次查询的召回上限由上游引擎决定；`DeepSeek-V4.1-Flash` 这类型号名在
+ * 不同引擎上对连字符、空格和站点关键词的处理并不一致。多准备几条变体、
+ * 在结果不足时逐条补搜，比把所有词硬塞进一条超长查询稳定得多。
+ */
+const MAX_QUERY_VARIANTS = Number(process.env.SEARCH_QUERY_VARIANTS ?? 5);
 
 /**
  * 输出形状。
@@ -109,9 +118,9 @@ const SYSTEM_PROMPT = [
   "- disambiguators 用来把主题和同名事物分开；negatives 列出同名但明显不是用户想要的。",
   "- variants 按站点分别给查询词：视频站（B 站 / YouTube）偏向完整的产品名或教程标题，" +
     "问答站（知乎）偏向「怎么用 / 是什么 / 对比」这类问句，代码站（GitHub）偏向仓库名或技术名。",
-  "- relatedTerms 只放和 entity 紧密相连、能帮助找到关联资料的技术词。" +
-    "例如查询 DeepSeek-V4-Flash 且用户关心推理优化时，可以给 KVCache、显存、推理吞吐；" +
-    "不要放泛泛的「AI」「模型」，也不要放同名但无关的领域。",
+  "- relatedTerms 只放和 entity 紧密相连、能帮助找到关联资料的技术词/架构/应用。" +
+    "例如查询 DeepSeek-V4-Flash 时，自动补充相关的底层技术概念（如 MoE 架构、MLA 注意力机制、KVCache、vLLM 推理部署、基准评测），" +
+    "以便在直接型号资料较少时，能够搜索其相关技术资料作为参考支撑；不要放泛泛的「AI」「模型」，也不要放同名但无关的领域。",
   "- **variants 里只写查询词本身**，不要写「site:xxx.com」，也不要写站点名 —— " +
     "那部分由调用方追加，写进来会重复。",
   "- **拿不准就不要改写。** 某个站点想不出更合适的查询词，就把它填成和原主题一样。" +
@@ -119,15 +128,23 @@ const SYSTEM_PROMPT = [
   "- 不要凭空编造原主题里没有的品牌、型号、年份。",
 ].join("\n");
 
-function userPrompt(raw: string, sites: SiteKey[], userIntent?: string): string {
-  return [
+function userPrompt(
+  raw: string,
+  sites: SiteKey[],
+  userIntent?: string,
+  avoidPatterns?: string[],
+): string {
+  const lines = [
     `调研主题（用户原话）：${raw}`,
-    userIntent ? `用户意图提示（必须满足）：${userIntent}` : "",
-    "",
+    userIntent ? `用户意图提示（必须满足）：${userIntent}` : null,
+    avoidPatterns?.length
+      ? `已识别需规避的低价值/跑题特征（并入 negatives，variants 里避开）：${avoidPatterns.join("、")}`
+      : null,
     `将要检索的站点：${sites.join("、")}`,
     "",
     "请分析这个主题并按要求返回 JSON。variants 里请覆盖上面列出的每一个站点。",
-  ].join("\n");
+  ];
+  return lines.filter((l): l is string => l !== null).join("\n");
 }
 
 /**
@@ -139,7 +156,18 @@ function userPrompt(raw: string, sites: SiteKey[], userIntent?: string): string 
 export async function planQueries(
   raw: string,
   sites: SiteKey[],
-  opts: { signal?: AbortSignal; intent?: string } = {},
+  opts: {
+    signal?: AbortSignal;
+    intent?: string;
+    /**
+     * 前几轮整理识别出的低价值/跑题特征（标题模式）。
+     *
+     * 由 `refine.ts` 把历轮 `avoidPatterns` 传进来：并进 prompt 让模型写
+     * variants 时主动避开，同时合并进返回的 `negatives` —— 词法相关性
+     * 与下一轮判定的判据也跟着收紧，补搜不会再把同一类垃圾捞回来。
+     */
+    avoidPatterns?: string[];
+  } = {},
 ): Promise<SearchPlan> {
   const userIntent = opts.intent?.trim() || undefined;
   if (!hasLLM()) {
@@ -165,7 +193,10 @@ export async function planQueries(
       PlanSchema,
       [
         { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userPrompt(raw, sites, userIntent) },
+        {
+          role: "user",
+          content: userPrompt(raw, sites, userIntent, opts.avoidPatterns),
+        },
       ],
       /*
         同时给出 `timeoutMs`：`signal` 是「整个分析」的截止时间，`timeoutMs` 是
@@ -186,7 +217,7 @@ export async function planQueries(
         aliases: clean(parsed.entity.aliases),
       },
       disambiguators: clean(parsed.disambiguators),
-      negatives: clean(parsed.negatives),
+      negatives: clean([...parsed.negatives, ...(opts.avoidPatterns ?? [])]),
       variants: pickVariants(parsed.variants, sites),
       source: "llm",
     };
@@ -227,6 +258,94 @@ export function variantFor(plan: SearchPlan, site: SiteKey): string {
   }
 
   return clauses.join(" ");
+}
+
+/**
+ * 生成一个站点的候选查询正文（不含站点关键词 / `site:` 语法）。
+ *
+ * `variantFor` 仍是“首选查询”，但单次查询可能因为引擎分词、站点收录或
+ * 查询过长而空手而归。这里把用户原词、实体别名和关联技术词拆成几条更短
+ * 的查询，调用方按结果数量决定是否继续尝试。
+ *
+ * 顺序有意偏向短查询：型号名 + 站点关键词这类查询最容易命中知乎，而把
+ * 意图、四个关联词和问句全部拼在一起时，任何一段不匹配都会拖垮整条查询。
+ */
+export function queryVariantsFor(
+  plan: SearchPlan | undefined,
+  site: SiteKey,
+  fallbackTopic?: string,
+): string[] {
+  const raw = plan?.raw.trim() || fallbackTopic?.trim() || "";
+  if (!raw) return [];
+
+  const primary = plan ? variantFor(plan, site) : raw;
+  const base = plan?.variants[site]?.trim() || raw;
+  const entity = plan?.entity.name.trim() || raw;
+  const aliases = (plan?.entity.aliases ?? []).map((s) => s.trim()).filter(Boolean);
+  const related = (plan?.relatedTerms ?? []).map((s) => s.trim()).filter(Boolean);
+
+  /*
+    知乎优先尝试最短的原词查询。实测带连字符的型号在长查询里会被引擎拆散，
+    `DeepSeek-V4.1-Flash 知乎` 反而能拿到更稳定的命中；其它站点仍优先使用
+    已经过站点改写的首选查询，避免牺牲平台特定的改写效果。
+  */
+  const preferred =
+    site === "zhihu"
+      ? [raw, entity, ...aliases, primary, base]
+      : [primary, base, raw, entity, ...aliases];
+
+  const expanded = [
+    ...preferred,
+    /*
+      连字符型号名的**去标点形态**。
+
+      `DeepSeek-V4.1-Flash` 在不同引擎里有三种命运：bing 把它当一个词（常常
+      一个都搜不到），duckduckgo 按连字符拆词（搜回来一堆 v4 和 flash 的
+      无关组合），还有些引擎把它整个短语当停用词丢掉。补一条空格形态
+      `DeepSeek V4.1 Flash` 和一条引号精确形态，三种引擎各有一条能走通的路。
+    */
+    ...punctuationForms(raw),
+    ...punctuationForms(entity).slice(0, 2),
+    /*
+      技术扩展查询：当精确型号文章较少时，直接搜索与该技术强相关的词汇作为参考材料
+    */
+    ...related.map((term) => `${entity} ${term}`),
+    ...related.map((term) => `${raw} ${term}`),
+    ...aliases.map((alias, index) =>
+      related[index] ? `${alias} ${related[index]}` : alias,
+    ),
+    // 单独补充 1~2 个关键衍生技术词（如 DeepSeek 相关时搜索 "DeepSeek MoE", "DeepSeek MLA"）
+    ...related.slice(0, 3).map((term) => `${entity.split(/[-_.\s]/)[0] || entity} ${term}`),
+  ];
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const candidate of expanded) {
+    const value = candidate.trim().replace(/\s+/g, " ");
+    const key = value.toLowerCase();
+    if (!value || seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+    if (out.length >= MAX_QUERY_VARIANTS) break;
+  }
+  return out;
+}
+
+/**
+ * 把一个查询词拆成「去标点」与「引号精确匹配」两种形态。
+
+ * 只对**真的含标点的词**动手：`露营装备` 这类纯中文词加引号是多余的，
+ * 反而可能让某些引擎按字面短语匹配而漏掉分词命中的结果。
+ */
+function punctuationForms(value: string): string[] {
+  const trimmed = value.trim();
+  if (!trimmed || !/[-_./]/.test(trimmed)) return [];
+  const spaced = trimmed.replace(/[-_./]+/g, " ").replace(/\s+/g, " ").trim();
+  const out: string[] = [];
+  if (spaced && spaced.toLowerCase() !== trimmed.toLowerCase()) out.push(spaced);
+  // 引号形态放最后：它最精确，也最容易因为引擎差异空手而归，当保底不当首选
+  out.push(`"${trimmed.replace(/"/g, "")}"`);
+  return out;
 }
 
 /**

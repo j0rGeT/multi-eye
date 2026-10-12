@@ -72,6 +72,55 @@ export const SITE_TARGETS: Record<SiteKey, SiteTarget> = {
     contentLimited: true,
     color: "#0084ff",
   },
+  /*
+    下面五个是**技术文章站**，与掘金同构：有真实域名、正文在公开页面上，
+    走「引擎链 + 域名过滤」那条路，不写直连 provider。
+
+    它们存在的理由是一次实测：查 `DeepSeek-V4.1-Flash` 这类型号名，知乎与
+    全网桶常常只回来几条，而同期 CSDN / 博客园 / 思否上挂着大量踩坑记录与
+    译文 —— 那些正是「技术资料」的主力，却因为不在站点清单里一条都进不来。
+    技术调研只搜社交平台与全网，等于主动放弃了中文技术博客圈。
+  */
+  csdn: {
+    key: "csdn",
+    label: "CSDN",
+    domain: "csdn.net",
+    keyword: "CSDN",
+    kind: "article",
+    color: "#fc5531",
+  },
+  cnblogs: {
+    key: "cnblogs",
+    label: "博客园",
+    domain: "cnblogs.com",
+    keyword: "博客园",
+    kind: "article",
+    color: "#21759b",
+  },
+  segmentfault: {
+    key: "segmentfault",
+    label: "思否",
+    domain: "segmentfault.com",
+    keyword: "SegmentFault",
+    kind: "article",
+    color: "#148acf",
+  },
+  v2ex: {
+    key: "v2ex",
+    label: "V2EX",
+    domain: "v2ex.com",
+    keyword: "V2EX",
+    kind: "social",
+    color: "#336b87",
+  },
+  infoq: {
+    key: "infoq",
+    label: "InfoQ",
+    domain: "infoq.cn",
+    keyword: "InfoQ",
+    kind: "article",
+    color: "#0f70b7",
+  },
   bilibili: {
     key: "bilibili",
     label: "哔哩哔哩",
@@ -212,6 +261,11 @@ export const SITE_ORDER = Object.keys(SITE_TARGETS) as SiteKey[];
  */
 export const DEFAULT_SITES: SiteKey[] = [
   "zhihu",
+  "csdn",
+  "cnblogs",
+  "segmentfault",
+  "v2ex",
+  "infoq",
   "juejin",
   "bilibili",
   "youtube",
@@ -265,9 +319,14 @@ export function buildQuery(
   site: SiteKey,
   domain?: string,
 ): string {
-  if (domain) return `${topic} site:${domain}`;
+  const targetDomain = domain || siteDomain(site);
+  if (targetDomain) {
+    // 对有具体域名的站点（如 zhihu.com, csdn.net 等），优先使用精确的 site: 语法，
+    // 配合 SearXNG/Bing 上游能大幅增加真实收录文章的召回率
+    return `${topic} site:${targetDomain}`;
+  }
   const target = SITE_TARGETS[site];
-  if (!target.keyword) return topic;
+  if (!target?.keyword) return topic;
   return `${topic} ${target.keyword}`;
 }
 

@@ -39,7 +39,13 @@ import cytoscape, {
   type NodeSingular,
 } from "cytoscape";
 import fcose from "cytoscape-fcose";
-import type { Cluster, GraphModel, GraphNode, SessionViewState } from "@/core/types";
+import type {
+  Cluster,
+  Document,
+  GraphModel,
+  GraphNode,
+  SessionViewState,
+} from "@/core/types";
 import { clusterColor, clusterIndexMap } from "@/core/graph/palette";
 import { edgeWidth, nodeSize } from "@/core/graph/geometry";
 import GraphLegend from "./GraphLegend";
@@ -72,6 +78,10 @@ export interface GraphViewProps {
   initialView?: SessionViewState;
   /** 位置变化后回调（已 debounce）。保存失败由调用方静默处理。 */
   onViewChange?: (view: SessionViewState) => void;
+  /** 已抓取资料，用于文档节点双击时直接打开本地预览。 */
+  documents?: Document[];
+  /** 双击文档节点时打开预览。 */
+  onOpenDocument?: (doc: Document) => void;
 }
 
 export default function GraphView({
@@ -81,6 +91,8 @@ export default function GraphView({
   showDocuments,
   initialView,
   onViewChange,
+  documents,
+  onOpenDocument,
 }: GraphViewProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -106,6 +118,10 @@ export default function GraphView({
   selectedIdRef.current = selectedId;
   const showDocumentsRef = useRef(showDocuments);
   showDocumentsRef.current = showDocuments;
+  const documentsRef = useRef(documents ?? []);
+  documentsRef.current = documents ?? [];
+  const onOpenDocumentRef = useRef(onOpenDocument);
+  onOpenDocumentRef.current = onOpenDocument;
   const hoverRef = useRef<string | null>(null);
   const initialViewRef = useRef(initialView);
   /** 首次布局才自动 fit；之后 fit 会毁掉用户当前的缩放与平移。 */
@@ -165,6 +181,7 @@ export default function GraphView({
           kind: e.kind,
           weight: e.weight,
           width: edgeWidth(e.weight, maxEdge),
+          label: e.label ?? "",
         },
       }));
 
@@ -290,6 +307,23 @@ export default function GraphView({
             opacity: 0.4,
           },
         },
+        /*
+          LLM 构图会给关系边一个谓词（例如「优化 / 支持」）。把谓词直接标在
+          线上，选中邻域时就能看出“这两个概念是什么关系”，而不用回到右栏逐条
+          对照边列表；启发式构图没有 relation 边，因此不会增加噪音。
+        */
+        {
+          selector: 'edge[kind = "relation"]',
+          style: {
+            label: "data(label)",
+            "font-size": 8,
+            color: "#8b949e",
+            "text-background-color": "#0d1117",
+            "text-background-opacity": 0.85,
+            "text-background-padding": "2px",
+            "text-rotation": "autorotate",
+          },
+        },
         // 选中的邻域（点击选中，或悬停时以悬停节点为中心）
         {
           selector: ".highlighted",
@@ -327,9 +361,23 @@ export default function GraphView({
       if (evt.target === cy) onSelectRef.current(null);
     });
 
-    // 双击 → 把该节点及其邻域放大到填满视野
+    /*
+      双击 → 文档节点直接打开本地资料详情，其它节点把邻域放大到填满视野。
+
+      单击仍然只做选中：右栏可以先看清这个节点连了什么，再决定要不要打开正文。
+      这样既保留了原来的导航动作，也给「资料节点」补上一条直达预览的路径。
+    */
     cy.on("dbltap", "node", (evt) => {
       const node = evt.target as NodeSingular;
+      const gn = graphRef.current.nodes.find((n) => n.id === node.id());
+      if (gn?.kind === "document") {
+        const doc = documentsRef.current.find((d) => gn.docIds.includes(d.id));
+        if (doc) {
+          onSelectRef.current(gn);
+          onOpenDocumentRef.current?.(doc);
+          return;
+        }
+      }
       cy.animate({
         fit: { eles: node.closedNeighborhood(), padding: 50 },
         duration: 500,

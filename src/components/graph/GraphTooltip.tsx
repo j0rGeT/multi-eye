@@ -58,7 +58,7 @@ export default function GraphTooltip({ state }: { state: TooltipState | null }) 
         <span className="dim">连接 {node.degree}</span>
       </div>
       {node.kind === "document" ? (
-        <div className="gtip-foot dim">双击聚焦 · 单击看详情</div>
+        <div className="gtip-foot dim">单击看关联 · 双击打开资料详情</div>
       ) : (
         <div className="gtip-foot">
           {clusterLabel ?? "未归类"}

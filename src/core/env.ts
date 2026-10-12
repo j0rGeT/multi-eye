@@ -144,11 +144,11 @@ export const config = {
   searchPerSiteLimit: Number(process.env.SEARCH_PER_SITE_LIMIT ?? 30),
   /**
    * 链上某条 provider 拿到这么多条就不再往链下游走（短路，见 orchestrate.ts 的
-   * `ENOUGH_RESULTS`）。默认从 4 提到 8，是为了给质量闸门留出候选余量：
-   * 过滤掉导航/短摘要后仍能剩下一批可抓资料。配了 Serper 的用户如果在意费用，
-   * 可以用 SEARCH_ENOUGH_RESULTS=4 恢复旧策略。
+   * `ENOUGH_RESULTS`）。默认从 4 提到 12，是为了给多查询扩展和质量闸门留出
+   * 候选余量：过滤掉导航/短摘要、去掉重复 URL 后仍能剩下一批可抓资料。
+   * 配了 Serper 的用户如果在意费用，可以用 SEARCH_ENOUGH_RESULTS=4 恢复旧策略。
    */
-  searchEnoughResults: Number(process.env.SEARCH_ENOUGH_RESULTS ?? 8),
+  searchEnoughResults: Number(process.env.SEARCH_ENOUGH_RESULTS ?? 12),
   searchYoutubeLimit: Number(process.env.SEARCH_YOUTUBE_LIMIT ?? 20),
   searchBilibiliLimit: Number(process.env.SEARCH_BILIBILI_LIMIT ?? 20),
   /**
