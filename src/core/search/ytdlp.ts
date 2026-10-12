@@ -76,10 +76,16 @@ export class YtDlpProvider implements SearchProvider {
       `ytsearch${limit}:${q.text}`,
     ];
 
+    // 搜索加设硬超时（最多 15 秒），避免 yt-dlp 进程受反爬/网络阻塞拖垮整个搜索链路
+    const timeoutMs = 15_000;
+    const searchSignal = signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+      : AbortSignal.timeout(timeoutMs);
+
     const { stdout } = await execFileAsync(config.ytdlpPath, args, {
-      timeout: 60_000,
+      timeout: timeoutMs,
       maxBuffer: 32 * 1024 * 1024,
-      signal,
+      signal: searchSignal,
     });
 
     const data = JSON.parse(stdout) as YtdlpPlaylist;

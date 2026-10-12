@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Document } from "@/core/types";
@@ -9,24 +9,30 @@ import { formatDate } from "@/core/time";
 
 export interface DocumentPreviewProps {
   document: Document;
+  /** 当前会话 id。用于先找已下载的本地视频。 */
+  sessionId?: string;
   onClose: () => void;
 }
 
 /**
- * 资料预览：文章渲染 Markdown，视频内嵌播放器。
+ * 资料预览：文章渲染 Markdown；视频**优先播放本地已下载的文件**。
  *
  * 这个面板读的是抓取后已经落盘的 `Document`，不重新请求原文，所以即使原站
- * 已经下线，用户仍然能查看这次抓到的内容。视频优先使用平台官方播放器；
- * 其它站点没有安全的内嵌地址时，保留封面与原文链接，不伪造一个“正在播放”。
+ * 已经下线，用户仍然能查看这次抓到的内容。
+ *
+ * 视频的规则（按用户要求）：
+ *   - 下载完成 → 直接播本地文件（不经过平台播放器，也不会有广告/登录墙）
+ *   - 还没下载 → 跳转到视频原地址；同时**每 3 秒查一次**，下载一完成就
+ *     自动切成本地播放 —— 用户开着预览去点下载，不必关掉再重开。
  */
 export default function DocumentPreview({
   document,
+  sessionId,
   onClose,
 }: DocumentPreviewProps) {
   const [source, setSource] = useState(false);
   const kind = docKind(document);
   const markdown = document.markdown?.trim() || document.text.trim();
-  const embedUrl = useMemo(() => videoEmbedUrl(document.url), [document.url]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -103,7 +109,10 @@ export default function DocumentPreview({
 
         <div style={{ overflow: "auto", padding: "16px 20px 24px" }}>
           {kind === "video" && (
-            <VideoPreview document={document} embedUrl={embedUrl} />
+            <VideoPreview
+              document={document}
+              sessionId={sessionId}
+            />
           )}
 
           {markdown && (
@@ -165,105 +174,164 @@ export default function DocumentPreview({
 
 function VideoPreview({
   document,
-  embedUrl,
+  sessionId,
 }: {
   document: Document;
-  embedUrl: string | null;
+  sessionId?: string;
 }) {
-  if (embedUrl) {
+  const [localState, setLocalState] = useState<"checking" | "pending" | "ready">(
+    sessionId ? "checking" : "pending",
+  );
+
+  useEffect(() => {
+    if (!sessionId) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const url = `/api/preview?sessionId=${encodeURIComponent(sessionId)}&docId=${encodeURIComponent(document.id)}`;
+
+    const check = async () => {
+      try {
+        const res = await fetch(url, { cache: "no-store" });
+        if (!active) return;
+        if (res.ok) {
+          setLocalState("ready");
+          return;
+        }
+        // 还没下载 —— 留在「跳原地址」这一档，但继续轮询：
+        // 用户很可能正开着预览去点下载，完成的瞬间这里就该自己切过去。
+        setLocalState((prev) => (prev === "checking" ? "pending" : prev));
+      } catch {
+        if (!active) return;
+        setLocalState((prev) => (prev === "checking" ? "pending" : prev));
+      }
+      if (active) timer = setTimeout(() => void check(), 3_000);
+    };
+    void check();
+
+    return () => {
+      active = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [document.id, sessionId]);
+
+  if (localState === "checking") {
     return (
-      <iframe
-        title={document.title || "视频预览"}
-        src={embedUrl}
-        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-        allowFullScreen
-        style={{
-          display: "block",
-          width: "100%",
-          aspectRatio: "16 / 9",
-          border: 0,
-          borderRadius: 6,
-          background: "#000",
-        }}
-      />
+      <p className="dim" style={{ fontSize: 13, margin: 0 }}>
+        正在检查本地是否已下载这个视频…
+      </p>
     );
   }
 
-  if (document.thumbnail) {
+  if (localState === "ready") {
     return (
-      <a
-        href={document.url}
-        target="_blank"
-        rel="noreferrer"
-        style={{ display: "block", position: "relative" }}
-      >
-        <img
-          src={document.thumbnail}
-          alt={document.title}
+      <div>
+        <div className="dim" style={{ fontSize: 11, marginBottom: 6 }}>
+          本地已下载视频
+        </div>
+        <video
+          controls
+          playsInline
+          preload="metadata"
+          poster={document.thumbnail}
+          src={`/api/preview?sessionId=${encodeURIComponent(sessionId ?? "")}&docId=${encodeURIComponent(document.id)}`}
           style={{
             display: "block",
             width: "100%",
-            maxHeight: 360,
-            objectFit: "cover",
+            maxHeight: 520,
             borderRadius: 6,
             background: "#000",
           }}
-        />
-        <span
-          style={{
-            position: "absolute",
-            inset: "50% auto auto 50%",
-            transform: "translate(-50%, -50%)",
-            padding: "8px 14px",
-            borderRadius: 999,
-            background: "rgb(0 0 0 / 72%)",
-            color: "#fff",
-            fontSize: 13,
-          }}
         >
-          打开视频
-        </span>
-      </a>
+          您的浏览器不支持视频播放。
+        </video>
+      </div>
     );
   }
 
+  if (localState === "pending") {
+    return (
+      <div>
+        <a
+          href={document.url}
+          target="_blank"
+          rel="noreferrer"
+          style={{ display: "block", position: "relative" }}
+        >
+          {document.thumbnail ? (
+            <img
+              src={document.thumbnail}
+              alt={document.title}
+              style={{
+                display: "block",
+                width: "100%",
+                maxHeight: 420,
+                objectFit: "cover",
+                borderRadius: 6,
+                background: "#000",
+              }}
+            />
+          ) : (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: "100%",
+                aspectRatio: "16 / 9",
+                borderRadius: 6,
+                background: "#000",
+                color: "#8b949e",
+                fontSize: 13,
+              }}
+            >
+              本地尚未下载
+            </div>
+          )}
+          <span
+            style={{
+              position: "absolute",
+              inset: "50% auto auto 50%",
+              transform: "translate(-50%, -50%)",
+              padding: "8px 14px",
+              borderRadius: 999,
+              background: "rgb(0 0 0 / 72%)",
+              color: "#fff",
+              fontSize: 13,
+            }}
+          >
+            打开原视频
+          </span>
+        </a>
+        <p className="dim" style={{ fontSize: 12, margin: "8px 0 0" }}>
+          本地还没有下载这个视频，点击上方跳转到原地址。在下方下载面板勾选
+          「视频」开始下载后，这里会自动切换成直接播放本地文件，无需重新打开。
+        </p>
+      </div>
+    );
+  }
+
+  // 本地已下载 —— 直接播文件，不经过平台播放器
   return (
-    <p className="dim" style={{ fontSize: 12, margin: 0 }}>
-      该站点不提供可安全内嵌的播放器，请通过“打开原文”观看视频。
-    </p>
+    <div>
+      <div className="dim" style={{ fontSize: 11, marginBottom: 6 }}>
+        本地已下载 · 直接播放
+      </div>
+      <video
+        controls
+        playsInline
+        preload="metadata"
+        poster={document.thumbnail}
+        src={`/api/preview?sessionId=${encodeURIComponent(sessionId ?? "")}&docId=${encodeURIComponent(document.id)}`}
+        style={{
+          display: "block",
+          width: "100%",
+          maxHeight: 520,
+          borderRadius: 6,
+          background: "#000",
+        }}
+      >
+        您的浏览器不支持视频播放。
+      </video>
+    </div>
   );
-}
-
-/** YouTube 与 B 站给出官方 embed 地址；其它站点交给原文链接。 */
-function videoEmbedUrl(rawUrl: string): string | null {
-  let url: URL;
-  try {
-    url = new URL(rawUrl);
-  } catch {
-    return null;
-  }
-
-  if (/(^|\.)youtube\.com$/.test(url.hostname) || url.hostname === "youtu.be") {
-    const id =
-      url.hostname === "youtu.be"
-        ? url.pathname.slice(1)
-        : url.searchParams.get("v") ||
-          url.pathname.match(/\/(?:shorts|embed)\/([^/]+)/)?.[1];
-    return id ? `https://www.youtube.com/embed/${encodeURIComponent(id)}` : null;
-  }
-
-  if (/(^|\.)bilibili\.com$/.test(url.hostname)) {
-    const bvid = url.searchParams.get("bvid");
-    const aid = url.searchParams.get("aid");
-    const pathId = url.pathname.match(/\/video\/(BV[^/]+)/)?.[1];
-    const id = bvid ?? pathId;
-    if (id) {
-      return `https://player.bilibili.com/player.html?bvid=${encodeURIComponent(id)}&autoplay=0&high_quality=1`;
-    }
-    if (aid) {
-      return `https://player.bilibili.com/player.html?aid=${encodeURIComponent(aid)}&autoplay=0&high_quality=1`;
-    }
-  }
-
-  return null;
 }

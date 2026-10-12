@@ -29,6 +29,17 @@ search:
     - html
     - json
 
+# ─────────────────────────── 出站请求 ───────────────────────────
+#
+# request_timeout 拉长到 6s：走代理后境外引擎（duckduckgo/startpage）的首个
+# TLS 握手要穿一次隧道，3s 默认超时会把慢但可达的引擎判死。
+#
+# proxies **不写在这里**：代理地址是运行时事实（VPN 可能在也可能不在），
+# 由 scripts/searxng.sh 探测后合成 .searxng/settings.runtime.yml 注入。
+outgoing:
+  request_timeout: 6.0
+  max_request_timeout: 10.0
+
 # ─────────────────────────── 引擎白名单 ───────────────────────────
 #
 # 本机实测（2026-10，国内网络 + VPN 代理）只有这四个可用：

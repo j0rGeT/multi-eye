@@ -10,6 +10,11 @@
 /** 支持定向检索的站点。'web' 表示不做 site: 限定的全网兜底。 */
 export type SiteKey =
   | "zhihu"
+  | "csdn"
+  | "cnblogs"
+  | "segmentfault"
+  | "v2ex"
+  | "infoq"
   | "juejin"
   | "xiaohongshu"
   | "youtube"
@@ -189,6 +194,30 @@ export interface ResultSignal {
   format?: "count" | "duration";
 }
 
+/** 搜索结果的参考价值档位。`medium` 是拿不准时的默认，不是「不好」。 */
+export type ValueVerdict = "high" | "medium" | "low";
+
+/**
+ * 搜索阶段的价值预判（基于标题+摘要+域名，正文还没抓）。
+ *
+ * ── 它与 `Relevance` 的边界 ──
+ *
+ *   - `Relevance` 回答「切不切你的题」，判据是用户原话，任何时候都在跑；
+ *   - `ValueAssessment` 回答「即使切题，它看起来像不像有实质内容」，
+ *     判据是**标题与摘要给的第一印象** —— 标题党、登录墙、纯转载列表页
+ *     这类「搜索阶段就能看出不值一抓」的条目在这里被标出来。
+ *
+ * 两者同样**只标记不删除**：`low` 结果仍然留在列表、报告与下载包里，
+ * 只是默认不为它花抓取成本（见 `/api/fetch` 的 `pickTargets`）。
+ */
+export interface ValueAssessment {
+  verdict: ValueVerdict;
+  /** 一句话依据。必须指向给它的材料里能看见的东西。 */
+  reason: string;
+  /** 整理分类，如「部署实践」「原理分析」。 */
+  category: string;
+}
+
 export interface SearchResult {
   /** sha1(归一化 URL) 的前 16 位，用作跨 provider 的稳定去重键。 */
   id: string;
@@ -234,6 +263,14 @@ export interface SearchResult {
    * 也最难发现的一类错。
    */
   relevance?: Relevance;
+  /**
+   * 搜索阶段的价值预判（标题+摘要层面）。
+   *
+   * 可选：无 LLM、判定超时、或旧会话加载时为 `undefined`，读取方必须把
+   * `undefined` 当「**未预判**」—— 绝不当成 `low`。抓取层只跳过
+   * `verdict === "low"` 的条目，未预判的一律放行。
+   */
+  value?: ValueAssessment;
 }
 
 export interface ProviderCapabilities {
@@ -315,6 +352,21 @@ export interface Document {
    * 见 `search/dedupe.ts` 开头关于「宁可漏判不可误判」的说明。
    */
   duplicateOf?: string;
+  /**
+   * 整理阶段（`/api/refine` 的 LLM）给这篇资料归的类。
+   *
+   * 可选：只有走过整理才会写。它不参与任何判定 —— 只用于把已抓取的资料
+   * 按主题分组展示，以及给下一轮补搜提供「这批已经覆盖了哪些角度」的依据。
+   */
+  category?: string;
+  /**
+   * 整理阶段判定为「对本主题参考价值低」的标记，值是判定理由。
+   *
+   * **只标记、不删除** —— 与 `duplicateOf` 同一条纪律：资料仍然留在列表、
+   * 报告与下载包里，图和整理列表默认不展示它，但用户随时能看回来。
+   * 理由必须留着：一个没有理由的「低价值」标记无法被核实，等于凭空删数据。
+   */
+  lowValue?: { reason: string };
   /**
    * 抓取失败的原因。注意：失败仍会产出 Document（正文退化为 snippet），
    * 而不是抛异常 —— 单篇失败不该中断整个主题的流程。
@@ -441,6 +493,24 @@ export interface SearchOptions {
   intent?: string;
 }
 
+/**
+ * 一次抓取后的整理与补搜记录。
+ *
+ * 只记录“这轮看到了什么、下一轮搜什么”，不改写原始资料；界面据此显示轮次，
+ * 报告也能说明为什么同一批结果比第一轮多了几条。
+ */
+export interface RefinementRecord {
+  iteration: number;
+  at: string;
+  summary: string;
+  categories: string[];
+  missingAngles: string[];
+  queries: string[];
+  avoidPatterns: string[];
+  added: number;
+  fallbackReason?: string;
+}
+
 /** 一次搜索会话的完整快照，落盘为 data/sessions/<id>/session.json。 */
 export interface Session {
   topic: Topic;
@@ -462,6 +532,8 @@ export interface Session {
   searchOptions?: SearchOptions;
   /** 本次搜索的查询分析。旧会话没有该字段，恢复时按“未分析”处理。 */
   plan?: SearchPlan;
+  /** 抓取后的整理/补搜轮次。最多三轮，避免自动循环失控。 */
+  refinements?: RefinementRecord[];
 }
 
 export interface ProviderLogEntry {
@@ -559,6 +631,14 @@ export type SearchEvent =
        * 排序仍然由 `rankResults` 决定，关联度只做同印证数下的 tie-breaker。
        */
       verdicts: Record<string, Relevance>;
+      /**
+       * 搜索阶段的价值预判，`SearchResult.id → ValueAssessment`。
+       *
+       * 与 `verdicts` 同一个事件、同一批送判：两者都是收口后的 LLM 批处理，
+       * 并发跑完一起回来。没有 LLM 或预判失败时这个字段缺失/为空，
+       * 界面按「未预判」处理，不显示徽章。
+       */
+      values?: Record<string, ValueAssessment>;
     }
   | { type: "provider"; log: ProviderLogEntry }
   | {
@@ -593,6 +673,8 @@ export type FetchEvent =
        * 决定，**必须说出来**，否则用户只会觉得「抓取少了几条，是不是坏了」。
        */
       skippedIrrelevant: number;
+      /** 因搜索阶段价值预判为 low 而被跳过抓取成本的条数。 */
+      skippedLowValue?: number;
       /** 因明显的无用/低质候选规则被过滤的条数。 */
       skippedLowQuality?: number;
     }
@@ -605,5 +687,7 @@ export type FetchEvent =
       byMethod: Record<ExtractMethod, number>;
       /** 本轮质量闸门过滤掉的候选数，便于界面明确告知。 */
       filteredLowQuality?: number;
+      /** 整理阶段被判为低价值（只标记不删除）的篇数。 */
+      lowValue?: number;
     }
   | { type: "error"; message: string };

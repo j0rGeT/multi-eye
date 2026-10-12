@@ -11,6 +11,7 @@
 import { useState } from "react";
 import type {
   ProviderLogEntry,
+  RefinementRecord,
   ResultSignal,
   SearchPlan,
   SearchResult,
@@ -100,6 +101,20 @@ export interface SearchPanelProps {
   /** 构图成功后的一句告知（目前只用于「N 篇疑似不相关，没进图」）。 */
   graphNotice: string | null;
   hasGraph: boolean;
+  /** 抓取正文后，根据正文整理并发起受控补搜。 */
+  onRefine: () => void;
+  refining: boolean;
+  refineNotice: string | null;
+  /** 每轮整理补搜的完整记录（summary/categories/queries 等）。 */
+  refinements: RefinementRecord[];
+  refineIteration: number;
+  refineMax: number;
+  /** 自动流水线：整理 → 补搜 → 抓取 → 再整理，轮数与手动共用 refineMax。 */
+  onPipeline: () => void;
+  /** 全流程一键编排：搜索 → 抓取 → 整理补搜 → 构图。 */
+  onResearch: () => void;
+  pipelining: boolean;
+  pipelineStage: string | null;
 }
 
 export default function SearchPanel(props: SearchPanelProps) {
@@ -109,6 +124,8 @@ export default function SearchPanel(props: SearchPanelProps) {
     plan, results, logs, siteCounts,
     documents, onFetch, onPreviewDocument, fetching, fetchProgress, fetchNotice,
     onBuildGraph, building, graphError, graphNotice, hasGraph,
+    onRefine, refining, refineNotice, refinements, refineIteration, refineMax,
+    onPipeline, onResearch, pipelining, pipelineStage,
   } = props;
 
   const allSites = SITE_ORDER;
@@ -161,18 +178,42 @@ export default function SearchPanel(props: SearchPanelProps) {
             value={query}
             onChange={(e) => onQueryChange(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !searching && query.trim()) onSearch();
+              if (e.key === "Enter" && !searching && !pipelining && query.trim()) {
+                onSearch();
+              }
             }}
-            disabled={searching}
+            disabled={searching || pipelining}
           />
           <button
-            className="btn btn-primary"
+            className="btn"
             onClick={onSearch}
-            disabled={searching || !query.trim()}
+            disabled={searching || pipelining || !query.trim()}
+            title="只做第一步：多站点检索 + 相关性/价值预判，之后自己决定抓哪些"
           >
-            {searching ? "搜索中…" : "搜索"}
+            {searching && !pipelining ? "搜索中…" : "仅搜索"}
+          </button>
+          <button
+            className="btn btn-primary"
+            onClick={onResearch}
+            disabled={
+              searching || pipelining || fetching || refining || !query.trim()
+            }
+            title="自动跑完整流程：搜索 → 抓取正文 → 智能整理补搜（最多3轮）→ 构建拓扑"
+          >
+            {pipelining ? "调研进行中…" : "一键调研"}
           </button>
         </div>
+
+        {/*
+          流水线阶段在「资料处理」面板里也有显示，但那个面板要等 results.length>0
+          才挂载 —— 一键调研的第一阶段（搜索）恰恰还没出结果，这里必须有一份，
+          否则用户点了按钮看着像没反应。
+        */}
+        {pipelining && pipelineStage && (
+          <p className="dim" style={{ fontSize: 12, margin: "8px 0 0" }}>
+            {pipelineStage}
+          </p>
+        )}
 
         <label style={{ display: "block", marginTop: 10 }}>
           <span className="dim" style={{ fontSize: 11 }}>
@@ -406,6 +447,41 @@ export default function SearchPanel(props: SearchPanelProps) {
                   : "构建知识拓扑"}
             </button>
 
+            {documents.length > 0 && (
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  className="btn"
+                  style={{ flex: 1 }}
+                  onClick={onRefine}
+                  disabled={refining || pipelining || fetching || searching}
+                  title="先整理已抓取正文的分类与缺口，再补搜一轮；最多三轮"
+                >
+                  {refining
+                    ? "整理并补搜中…"
+                    : refineIteration >= refineMax
+                      ? `整理补搜已完成（${refineIteration}/${refineMax}）`
+                      : `智能整理并补搜（${refineIteration}/${refineMax}）`}
+                </button>
+                <button
+                  className="btn btn-primary"
+                  style={{ flex: 1 }}
+                  onClick={onPipeline}
+                  disabled={pipelining || refining || fetching || searching}
+                  title="自动跑「整理 → 补搜 → 过滤 → 抓取新增」循环，最多三轮；判为不相关的新结果不会花抓取成本"
+                >
+                  {pipelining
+                    ? "流水线运行中…"
+                    : `一键流水线（最多 ${refineMax} 轮）`}
+                </button>
+              </div>
+            )}
+
+            {pipelining && pipelineStage && (
+              <p className="dim" style={{ fontSize: 12, margin: 0 }}>
+                {pipelineStage}
+              </p>
+            )}
+
             {documents.length === 0 && !fetching && (
               <p className="dim" style={{ fontSize: 12, margin: 0 }}>
                 拓扑基于正文构建。摘要太短，用它构图只会得到一张按标题匹配的假图。
@@ -415,6 +491,12 @@ export default function SearchPanel(props: SearchPanelProps) {
             {fetchNotice && (
               <p className="dim" style={{ fontSize: 12, margin: 0 }}>
                 {fetchNotice}
+              </p>
+            )}
+
+            {refineNotice && (
+              <p className="dim" style={{ fontSize: 12, margin: 0 }}>
+                {refineNotice}
               </p>
             )}
 
@@ -453,6 +535,11 @@ export default function SearchPanel(props: SearchPanelProps) {
             </div>
           )}
         </div>
+      )}
+
+      {/* ── 整理与补搜记录 ── */}
+      {refinements.length > 0 && (
+        <RefinementHistoryPanel refinements={refinements} />
       )}
 
       {/* ── 提供方日志 ── */}
@@ -505,6 +592,275 @@ export default function SearchPanel(props: SearchPanelProps) {
           onPreviewDocument={onPreviewDocument}
         />
       )}
+
+      {documents.length > 0 && (
+        <FetchedDocsPanel
+          documents={documents}
+          onPreviewDocument={onPreviewDocument}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * 已抓取资料面板 —— 按整理阶段给出的分类分组，并把低价值的标出来。
+ *
+ * 分类与价值来自抓取完成后那次 LLM 整理（`core/search/value.ts`）：
+ * 没走过整理的会话两个字段都缺，此时退化成「未分类」一列 —— **不猜分类**。
+ *
+ * 「隐藏低价值」默认关：与结果列表同一条纪律，筛选只改本地视图，
+ * 数据一条没少，点一下就能看回来。
+ */
+function FetchedDocsPanel({
+  documents,
+  onPreviewDocument,
+}: {
+  documents: Document[];
+  onPreviewDocument: (doc: Document) => void;
+}) {
+  const [hideLowValue, setHideLowValue] = useState(false);
+  const lowValueCount = documents.filter((d) => d.lowValue).length;
+  const visible = hideLowValue
+    ? documents.filter((d) => !d.lowValue)
+    : documents;
+
+  /*
+    分组：有分类的按分类，没分类的一律进「未分类」。
+    Map 保持首次出现的顺序 —— 分类来自 LLM 输出顺序，重排只会让列表跳动。
+  */
+  const groups = new Map<string, Document[]>();
+  for (const doc of visible) {
+    const key = doc.category?.trim() || "未分类";
+    const list = groups.get(key);
+    if (list) list.push(doc);
+    else groups.set(key, [doc]);
+  }
+  // 「未分类」永远垫底：它是缺省桶，不是一类主题
+  const ordered = [...groups.entries()].sort((a, b) => {
+    if (a[0] === "未分类") return 1;
+    if (b[0] === "未分类") return -1;
+    return b[1].length - a[1].length;
+  });
+
+  return (
+    <div className="panel" style={{ padding: 14 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "baseline",
+          justifyContent: "space-between",
+          gap: 10,
+        }}
+      >
+        <h2 style={{ margin: 0 }}>已抓取资料 · {documents.length}</h2>
+        <span className="dim" style={{ fontSize: 11 }}>
+          点击标题打开本地预览
+        </span>
+      </div>
+
+      {lowValueCount > 0 && (
+        <p className="dim" style={{ fontSize: 11, margin: "6px 0 0" }}>
+          其中 {lowValueCount} 篇被判为低价值（理由在条目上）；它们不进拓扑，
+          但仍在列表、报告与下载包里。
+          <button
+            className="badge"
+            onClick={() => setHideLowValue((v) => !v)}
+            style={{
+              cursor: "pointer",
+              marginLeft: 6,
+              color: hideLowValue ? "var(--accent)" : "var(--fg-dim)",
+              borderColor: hideLowValue ? "#1f6feb66" : "var(--border)",
+              background: hideLowValue ? "#1f6feb15" : "transparent",
+            }}
+          >
+            {hideLowValue ? "恢复显示" : `暂时隐藏这 ${lowValueCount} 篇`}
+          </button>
+        </p>
+      )}
+
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+          marginTop: 10,
+          maxHeight: 340,
+          overflow: "auto",
+        }}
+      >
+        {ordered.map(([category, docs]) => (
+          <div key={category}>
+            <div
+              className="dim"
+              style={{
+                fontSize: 11,
+                marginBottom: 6,
+                letterSpacing: "0.05em",
+              }}
+            >
+              {category} · {docs.length}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {docs.map((doc) => (
+                <button
+                  key={doc.id}
+                  className="btn"
+                  onClick={() => onPreviewDocument(doc)}
+                  style={{
+                    textAlign: "left",
+                    width: "100%",
+                    display: "block",
+                    opacity: doc.lowValue ? 0.7 : 1,
+                  }}
+                  title={
+                    doc.lowValue
+                      ? `低价值：${doc.lowValue.reason}`
+                      : contentKind(doc.site, doc.url) === "video"
+                        ? "打开视频预览"
+                        : "打开 Markdown 预览"
+                  }
+                >
+                  <span
+                    style={{
+                      display: "flex",
+                      gap: 8,
+                      alignItems: "flex-start",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <span
+                      style={{
+                        minWidth: 0,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {doc.title || doc.url}
+                    </span>
+                    <span className="badge" style={{ flexShrink: 0 }}>
+                      {contentKind(doc.site, doc.url) === "video"
+                        ? "视频预览"
+                        : "Markdown 预览"}
+                    </span>
+                  </span>
+                  {doc.lowValue && (
+                    <span
+                      style={{
+                        display: "block",
+                        fontSize: 11,
+                        color: "var(--warn, #d29922)",
+                        marginTop: 4,
+                      }}
+                    >
+                      低价值 · {doc.lowValue.reason}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 整理与补搜的逐轮记录。
+ *
+ * 展示位置刻意放在「资料处理」之后、「检索日志」之前：它是流程产物（每轮
+ * 补搜都会改变结果列表），用户想知道的是「这轮补搜为什么多了这几条」，
+ * 答案（missingAngles/queries）就该挨着它产生的东西。
+ *
+ * 信息全部来自 `Session.refinements`，与服务端落盘的是同一份 ——
+ * 界面不存在第二份「整理摘要」真相。
+ */
+function RefinementHistoryPanel({
+  refinements,
+}: {
+  refinements: RefinementRecord[];
+}) {
+  return (
+    <div className="panel" style={{ padding: 14 }}>
+      <h2>整理与补搜记录 · {refinements.length} 轮</h2>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {refinements.map((r) => (
+          <div
+            key={r.iteration}
+            style={{
+              padding: "8px 10px",
+              background: "var(--bg)",
+              border: "1px solid var(--border-subtle)",
+              borderRadius: 6,
+              fontSize: 12,
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                gap: 8,
+                marginBottom: 4,
+              }}
+            >
+              <strong>第 {r.iteration} 轮</strong>
+              <span className="dim">{formatDate(r.at)}</span>
+              <span
+                className="badge"
+                style={{ marginLeft: "auto", color: "var(--accent)" }}
+              >
+                新增 {r.added} 条
+              </span>
+            </div>
+
+            <p style={{ margin: "4px 0" }}>{r.summary}</p>
+
+            {r.categories.length > 0 && (
+              <div style={{ marginTop: 6 }}>
+                <span className="dim">已覆盖分类：</span>
+                {r.categories.map((c) => (
+                  <span key={c} className="badge" style={{ marginRight: 4 }}>
+                    {c}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {r.missingAngles.length > 0 && (
+              <div style={{ marginTop: 6 }}>
+                <span className="dim">补搜缺口：</span>
+                {r.missingAngles.join("、")}
+              </div>
+            )}
+
+            {r.queries.length > 0 && (
+              <div style={{ marginTop: 6 }}>
+                <span className="dim">实际补搜词：</span>
+                <span className="mono" style={{ fontSize: 11 }}>
+                  {r.queries.join("；")}
+                </span>
+              </div>
+            )}
+
+            {r.avoidPatterns.length > 0 && (
+              <div className="dim" style={{ marginTop: 6, fontSize: 11 }}>
+                规避：{r.avoidPatterns.join("、")}
+              </div>
+            )}
+
+            {r.fallbackReason && (
+              <div
+                className="dim"
+                style={{ marginTop: 6, fontSize: 11, color: "var(--warn, #d29922)" }}
+              >
+                本轮降级：{r.fallbackReason}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -544,6 +900,15 @@ function ResultList({
   */
   const [hideIrrelevant, setHideIrrelevant] = useState(false);
   const { judged, unlikely } = relevanceSummary(results);
+  /*
+    「暂时隐藏预判低价值的」——**默认关**，与 hideIrrelevant 同一条纪律：
+    预判只凭标题摘要，可能判错（一个标题平平的深入长文）。隐藏只是本地
+    视图，数据/抓取名单都不变 —— 抓取跳过的判定看 `pickTargets` 不看这里。
+  */
+  const [hideLowValueResults, setHideLowValueResults] = useState(false);
+  const lowValueCount = results.filter(
+    (r) => r.value?.verdict === "low",
+  ).length;
 
   /*
     「全部 / 仅视频 / 仅图文」——**默认全部**。
@@ -558,9 +923,10 @@ function ResultList({
   const [kindFilter, setKindFilter] = useState<KindFilter>("all");
 
   const visible = filterByKind(
-    hideIrrelevant
+    (hideIrrelevant
       ? results.filter((r) => r.relevance?.verdict !== "unlikely")
-      : results,
+      : results
+    ).filter((r) => !hideLowValueResults || r.value?.verdict !== "low"),
     kindFilter,
     (r) => contentKind(r.site, r.url),
   );
@@ -704,6 +1070,41 @@ function ResultList({
       )}
 
       {/*
+        价值预判的提示条，与相关性同一个位置：两种「不替你抓」的原因分开说 —
+        用户看到的是同一个「抓取跳过了几条」的现象，但一个是「不切题」、
+        一个是「切题但摘要看着就没内容」，混成一句就分不清是谁判的。
+      */}
+      {lowValueCount > 0 && (
+        <p className="dim" style={{ fontSize: 11, margin: "0 0 10px" }}>
+          另有{" "}
+          <span style={{ color: "var(--warn, #d29922)" }}>
+            {lowValueCount} 条预判参考价值较低
+          </span>
+          （抓取默认跳过，依据见条目悬浮）。
+          <button
+            className="badge"
+            onClick={() => setHideLowValueResults((v) => !v)}
+            title={
+              hideLowValueResults
+                ? "恢复显示全部结果。隐藏只是视图上的 —— 数据一条没少。"
+                : "只在列表里隐藏这些条目。抓取名单也不变 —— 真要抓请在抓取时勾选。"
+            }
+            style={{
+              marginLeft: 6,
+              cursor: "pointer",
+              color: hideLowValueResults ? "var(--accent)" : "var(--fg-dim)",
+              borderColor: hideLowValueResults ? "#1f6feb66" : "var(--border)",
+              background: hideLowValueResults ? "#1f6feb15" : "transparent",
+            }}
+          >
+            {hideLowValueResults
+              ? "恢复显示"
+              : `暂时隐藏这 ${lowValueCount} 条`}
+          </button>
+        </p>
+      )}
+
+      {/*
         时效筛选的副作用必须说出来。用户勾了「一周内」却看到一批资料，
         如果没有这行提示，他无从知道其中多少条是**因为没写日期而无法判断**、
         于是被保留下来的 —— 那样「一周内」看起来像一条没生效的筛选。
@@ -755,8 +1156,25 @@ function ResultList({
                       color: "var(--fg)",
                     }}
                   >
-                    <div style={{ fontSize: 13, lineHeight: 1.4 }}>
-                      {r.title || r.url}
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 8,
+                        alignItems: "flex-start",
+                        justifyContent: "space-between",
+                      }}
+                    >
+                      <div style={{ fontSize: 13, lineHeight: 1.4, minWidth: 0 }}>
+                        {r.title || r.url}
+                      </div>
+                      {doc && (
+                        <span
+                          className="badge"
+                          style={{ flexShrink: 0, color: "var(--accent)" }}
+                        >
+                          预览
+                        </span>
+                      )}
                     </div>
                     <div
                       className="dim"
@@ -849,6 +1267,27 @@ function ResultList({
                           }
                         >
                           · 疑似不相关
+                        </span>
+                      )}
+                      {/*
+                        价值预判徽章：与「疑似不相关」并列但语义不同 ——
+                        一个说「切不切题」，一个说「摘要看着有没有货」。
+                        high 标出来是提示「这条值得先抓」，low 是「摘要阶段就不像有货」。
+                      */}
+                      {r.value?.verdict === "high" && (
+                        <span
+                          style={{ color: "var(--ok)" }}
+                          title={`${r.value.category}：${r.value.reason}\n\n搜索阶段预判（只看标题与摘要）；抓取后还有一轮基于正文的复核。`}
+                        >
+                          · 高价值{r.value.category && r.value.category !== "未分类" ? ` · ${r.value.category}` : ""}
+                        </span>
+                      )}
+                      {r.value?.verdict === "low" && (
+                        <span
+                          style={{ color: "var(--warn, #d29922)" }}
+                          title={`为什么标它：${r.value.reason}\n（预判分类：${r.value.category}）\n\n只凭标题与摘要的第一印象；抓取时会默认跳过，但结果仍在列表与报告里。`}
+                        >
+                          · 预判低价值
                         </span>
                       )}
                       {doc && <BodyBadge doc={doc} />}
