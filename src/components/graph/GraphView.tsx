@@ -51,6 +51,7 @@ import { edgeWidth, nodeSize } from "@/core/graph/geometry";
 import GraphLegend from "./GraphLegend";
 import GraphToolbar from "./GraphToolbar";
 import GraphTooltip, { type TooltipState } from "./GraphTooltip";
+import TrendChart from "./TrendChart";
 
 let fcoseRegistered = false;
 function ensureFcose() {
@@ -132,6 +133,16 @@ export default function GraphView({
   const [fullscreen, setFullscreen] = useState(false);
   const [selectedCount, setSelectedCount] = useState(0);
   const [pinnedCount, setPinnedCount] = useState(0);
+  const [layoutMode, setLayoutMode] = useState<"free" | "yearly">(
+    initialView?.layoutMode ?? "free",
+  );
+  const [showTimeline, setShowTimeline] = useState<boolean>(
+    initialView?.showTimeline ?? true,
+  );
+  const layoutModeRef = useRef<"free" | "yearly">(layoutMode);
+  layoutModeRef.current = layoutMode;
+  const showTimelineRef = useRef<boolean>(showTimeline);
+  showTimelineRef.current = showTimeline;
 
   const clusterLabelById = useMemo(() => {
     const m = new Map<string, string>();
@@ -156,18 +167,24 @@ export default function GraphView({
       (n) => showDocuments || n.kind !== "document",
     );
 
-    const nodes: ElementDefinition[] = visibleNodes.map((n) => ({
-      data: {
-        id: n.id,
-        label: n.label,
-        kind: n.kind,
-        weight: n.weight,
-        degree: n.degree,
-        clusterId: n.clusterId,
-        color: clusterColor(clusterIndex.get(n.clusterId) ?? 0),
-        size: nodeSize(n.weight, maxWeight, n.kind),
-      },
-    }));
+    const nodes: ElementDefinition[] = visibleNodes.map((n) => {
+      const yearLabel = n.publishedYear ? ` [${n.publishedYear}${n.isYearInferred ? "*" : ""}]` : "";
+      return {
+        data: {
+          id: n.id,
+          label: n.label,
+          displayLabel: `${n.label}${layoutMode === "yearly" ? yearLabel : ""}`,
+          publishedYear: n.publishedYear,
+          isYearInferred: n.isYearInferred,
+          kind: n.kind,
+          weight: n.weight,
+          degree: n.degree,
+          clusterId: n.clusterId,
+          color: clusterColor(clusterIndex.get(n.clusterId) ?? 0),
+          size: nodeSize(n.weight, maxWeight, n.kind),
+        },
+      };
+    });
 
     const visible = new Set(visibleNodes.map((n) => n.id));
 
@@ -186,7 +203,7 @@ export default function GraphView({
       }));
 
     return { nodeDefs: nodes, edgeDefs: edges };
-  }, [graph, showDocuments]);
+  }, [graph, showDocuments, layoutMode]);
 
   // ── 位置持久化（debounce）──
   const saveTimer = useRef<number | null>(null);
@@ -205,6 +222,8 @@ export default function GraphView({
       positions,
       pinned,
       showDocuments: showDocumentsRef.current,
+      layoutMode: layoutModeRef.current,
+      showTimeline: showTimelineRef.current,
     });
   }, []);
 
@@ -249,7 +268,7 @@ export default function GraphView({
             "background-opacity": 0.85,
             "border-width": 1,
             "border-color": "#0d1117",
-            label: "data(label)",
+            label: "data(displayLabel)",
             "font-size": 9,
             color: "#c9d1d9",
             "text-valign": "bottom",
@@ -566,7 +585,14 @@ export default function GraphView({
       if (p) n.position(p);
     });
 
-    runLayout(cy, fittedRef.current ? "keep" : "initial", positionsRef.current, pinnedRef.current);
+    runLayout(
+      cy,
+      fittedRef.current ? "keep" : "initial",
+      positionsRef.current,
+      pinnedRef.current,
+      graphRef.current,
+      layoutModeRef.current,
+    );
 
     if (!fittedRef.current) {
       fittedRef.current = true;
@@ -591,7 +617,28 @@ export default function GraphView({
   const handleRelayout = useCallback(() => {
     const cy = cyRef.current;
     if (!cy) return;
-    runLayout(cy, "full", positionsRef.current, pinnedRef.current);
+    runLayout(cy, "full", positionsRef.current, pinnedRef.current, graphRef.current, layoutModeRef.current);
+  }, []);
+
+  /** 切换按年份分层布局 */
+  const handleToggleYearlyLayout = useCallback(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    const nextMode = layoutModeRef.current === "yearly" ? "free" : "yearly";
+    setLayoutMode(nextMode);
+    layoutModeRef.current = nextMode;
+    scheduleSaveRef.current();
+    runLayout(cy, "full", positionsRef.current, pinnedRef.current, graphRef.current, nextMode);
+  }, []);
+
+  /** 切换下方节点时序折线图 */
+  const handleToggleTimeline = useCallback(() => {
+    setShowTimeline((prev) => {
+      const next = !prev;
+      showTimelineRef.current = next;
+      scheduleSaveRef.current();
+      return next;
+    });
   }, []);
 
   const handleFit = useCallback(() => {
@@ -724,32 +771,71 @@ export default function GraphView({
   }, []);
 
   return (
-    <div ref={panelRef} className="graph-canvas">
-      <div
-        ref={containerRef}
-        className={`graph-cy${boxSelect ? " box-select" : ""}`}
-      />
+    <div
+      ref={panelRef}
+      className="graph-canvas"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        width: "100%",
+        height: "100%",
+        position: "relative",
+      }}
+    >
+      <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+        <div
+          ref={containerRef}
+          className={`graph-cy${boxSelect ? " box-select" : ""}`}
+        />
 
-      <GraphToolbar
-        onRelayout={handleRelayout}
-        onFit={handleFit}
-        onPinSelected={handlePinSelected}
-        onUnpinAll={handleUnpinAll}
-        onExportPng={handleExportPng}
-        onToggleBoxSelect={handleToggleBoxSelect}
-        onFullscreen={handleFullscreen}
-        boxSelect={boxSelect}
-        selectedCount={selectedCount}
-        pinnedCount={pinnedCount}
-        fullscreen={fullscreen}
-      />
+        <GraphToolbar
+          onRelayout={handleRelayout}
+          onFit={handleFit}
+          onPinSelected={handlePinSelected}
+          onUnpinAll={handleUnpinAll}
+          onExportPng={handleExportPng}
+          onToggleBoxSelect={handleToggleBoxSelect}
+          onFullscreen={handleFullscreen}
+          onToggleYearlyLayout={handleToggleYearlyLayout}
+          layoutMode={layoutMode}
+          onToggleTimeline={handleToggleTimeline}
+          showTimeline={showTimeline}
+          boxSelect={boxSelect}
+          selectedCount={selectedCount}
+          pinnedCount={pinnedCount}
+          fullscreen={fullscreen}
+        />
 
-      <GraphTooltip state={tooltip} />
+        <GraphTooltip state={tooltip} />
 
-      <GraphLegend clusters={graph.clusters} onFocus={handleFocusCluster} />
+        <GraphLegend clusters={graph.clusters} onFocus={handleFocusCluster} />
 
-      {fullscreen && graph.clusters.length > 1 && (
-        <div className="graph-fs-hint">按 Esc 退出全屏</div>
+        {fullscreen && graph.clusters.length > 1 && (
+          <div className="graph-fs-hint">按 Esc 退出全屏</div>
+        )}
+      </div>
+
+      {showTimeline && documents && documents.length > 0 && (
+        <div
+          style={{
+            flex: "0 0 auto",
+            borderTop: "1px solid var(--border-subtle)",
+            padding: "8px 12px",
+            background: "var(--bg-panel)",
+            maxHeight: 240,
+            overflowY: "auto",
+          }}
+        >
+          <TrendChart
+            graph={graph}
+            documents={documents}
+            selectedId={selectedId}
+            onSelectNode={(nodeId) => {
+              const node = graph.nodes.find((n) => n.id === nodeId) ?? null;
+              onSelect(node);
+            }}
+          />
+        </div>
       )}
     </div>
   );
@@ -776,8 +862,106 @@ function runLayout(
   mode: LayoutMode,
   positions: Map<string, XY>,
   pinned: Set<string>,
+  graphModel?: GraphModel,
+  yearlyMode: "free" | "yearly" = "free",
 ) {
   const large = cy.nodes().length > LARGE_GRAPH;
+
+  // ── 年份分层布局特殊处理 ──
+  if (yearlyMode === "yearly" && graphModel) {
+    const nodeMap = new Map<string, GraphNode>(graphModel.nodes.map((n) => [n.id, n]));
+    const yearsSet = new Set<number>();
+    cy.nodes().forEach((n) => {
+      const gn = nodeMap.get(n.id());
+      if (gn?.publishedYear) yearsSet.add(gn.publishedYear);
+    });
+
+    const sortedYears = [...yearsSet].sort((a, b) => b - a); // 降序：最新的年份排在最上面
+    const yearBandMap = new Map<number, number>();
+    sortedYears.forEach((yr, idx) => yearBandMap.set(yr, idx));
+    const unknownBandIndex = sortedYears.length; // 无年份的排在最底层
+
+    const BAND_HEIGHT = 220;
+    const bandTargetY = new Map<string, number>();
+
+    // 按年份分桶，在每层内横向均匀排布并适度抖动，避免节点重叠
+    const bandNodes = new Map<number, string[]>();
+    cy.nodes().forEach((n) => {
+      const gn = nodeMap.get(n.id());
+      const bandIdx = gn?.publishedYear ? (yearBandMap.get(gn.publishedYear) ?? unknownBandIndex) : unknownBandIndex;
+      const list = bandNodes.get(bandIdx) ?? [];
+      list.push(n.id());
+      bandNodes.set(bandIdx, list);
+    });
+
+    cy.batch(() => {
+      for (const [bandIdx, nodeIds] of bandNodes.entries()) {
+        const targetY = bandIdx * BAND_HEIGHT;
+        const total = nodeIds.length;
+        const SPACING = 140;
+        const startX = -((total - 1) * SPACING) / 2;
+
+        nodeIds.forEach((id, index) => {
+          // 如果节点已被用户锁定钉住，保持其 X 坐标不动，仅在 Y 轴规整对齐到该年份
+          const p = positions.get(id);
+          const isPinned = pinned.has(id);
+          const targetX = isPinned && p ? p.x : startX + index * SPACING;
+          bandTargetY.set(id, targetY);
+          const node = cy.getElementById(id);
+          node.position({ x: targetX, y: targetY });
+          positions.set(id, { x: targetX, y: targetY });
+        });
+      }
+    });
+
+    // 运行力导向让有连线的节点在 X 轴向邻居靠拢，并限制迭代收敛
+    const options = {
+      name: "fcose",
+      quality: "default",
+      packComponents: true,
+      animate: !large,
+      animationDuration: 400,
+      randomize: false,
+      nodeRepulsion: 4500,
+      idealEdgeLength: 70,
+      gravity: 0.2,
+      numIter: 300,
+    } as unknown as cytoscape.LayoutOptions;
+
+    // 清除此前可能遗留的 yearly 回吸监听器，避免在模式快速切换时串扰下一次自由布局
+    cy.removeListener("layoutstop.yearly");
+
+    // 布局动画结束后再次将 Y 轴稳稳吸附回该年份层，确保时间层次分明
+    cy.one("layoutstop.yearly", () => {
+      cy.batch(() => {
+        cy.nodes().forEach((n) => {
+          const y = bandTargetY.get(n.id());
+          if (y !== undefined) {
+            n.position("y", y);
+            positions.set(n.id(), { x: n.position("x"), y });
+          }
+        });
+      });
+    });
+
+    try {
+      cy.layout(options).run();
+    } catch {
+      // 容错：若极端情况下 fcose 抛错，直接保留已计算完成的精确分层坐标
+      cy.nodes().forEach((n) => {
+        const y = bandTargetY.get(n.id());
+        if (y !== undefined) {
+          n.position("y", y);
+          positions.set(n.id(), { x: n.position("x"), y });
+        }
+      });
+    }
+    return;
+  }
+
+  // 切入自由布局时清除此前 yearly 分层残留的监听器，确保不受上一次动画结束回吸干扰
+  cy.removeListener("layoutstop.yearly");
+
   const isFixed = (id: string) =>
     mode === "full" ? pinned.has(id) : positions.has(id);
 
@@ -825,7 +1009,19 @@ function runLayout(
 
   const options = {
     name: "fcose",
-    quality: large ? "draft" : "default",
+    /*
+      quality 恒为 default，不能按图大小降级成 draft。
+
+      draft 只跑谱布局，而谱布局只在 randomize:true 时才算出来 —— 我们必须
+      randomize:false（既有节点不动、新节点围绕既有结构生长），于是 spectralResult
+      是空的，fcose 在 relocateComponent 里读 componentResult.nodeIndexes 直接抛
+      「Cannot read properties of undefined (reading 'nodeIndexes')」。
+      就算有 fixedNodeConstraint 把那次读躲过去，draft + randomize:false 也是 fcose
+      自己写明的矛盾组合（它会打日志让你改回 default/proof），布局等于空跑 ——
+      大图点「重新布局」看起来就像没反应。代价是大图跑完整 CoSE，
+      由下面的 numIter 收敛上限兜住耗时。
+    */
+    quality: "default",
     /*
       有固定约束时关掉 packComponents。
 

@@ -17,6 +17,12 @@ export interface GraphToolbarProps {
   onExportPng: () => void;
   onToggleBoxSelect: () => void;
   onFullscreen: () => void;
+  /** 切换按年份分层布局 */
+  onToggleYearlyLayout?: () => void;
+  layoutMode?: "free" | "yearly";
+  /** 切换下方时序折线图显示 */
+  onToggleTimeline?: () => void;
+  showTimeline?: boolean;
   /** 框选中。开启时平移会被关掉（Cytoscape 里两者互斥）。 */
   boxSelect: boolean;
   selectedCount: number;
@@ -32,6 +38,10 @@ export default function GraphToolbar({
   onExportPng,
   onToggleBoxSelect,
   onFullscreen,
+  onToggleYearlyLayout,
+  layoutMode = "free",
+  onToggleTimeline,
+  showTimeline = true,
   boxSelect,
   selectedCount,
   pinnedCount,
@@ -47,6 +57,32 @@ export default function GraphToolbar({
         title="缩放到刚好装下整张图">
         适应窗口
       </button>
+
+      {onToggleYearlyLayout && (
+        <button
+          type="button"
+          className={`gtool-btn${layoutMode === "yearly" ? " on" : ""}`}
+          onClick={onToggleYearlyLayout}
+          title={
+            layoutMode === "yearly"
+              ? "当前为按年份分层布局。点击切回自由力导向"
+              : "按资料发布年份分层布局：最新在顶层，历年向下拉开，呈现技术出现时序"
+          }
+        >
+          {layoutMode === "yearly" ? "分层布局" : "按年份分层"}
+        </button>
+      )}
+
+      {onToggleTimeline && (
+        <button
+          type="button"
+          className={`gtool-btn${showTimeline ? " on" : ""}`}
+          onClick={onToggleTimeline}
+          title={showTimeline ? "隐藏下方的时序演变折线图" : "展开下方的技术节点时序演变折线图"}
+        >
+          {showTimeline ? "隐藏时序图" : "时序折线图"}
+        </button>
+      )}
 
       <span className="gtool-sep" />
 

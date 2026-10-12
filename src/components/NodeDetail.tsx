@@ -79,6 +79,12 @@ export default function NodeDetail({
         </div>
         <div className="dim" style={{ fontSize: 12, marginTop: 4 }}>
           权重 {node.weight.toFixed(2)} · 连接 {node.degree} · 支撑 {related.length} 篇
+          {node.publishedYear && (
+            <span>
+              {" "}· {node.publishedYear}年
+              {node.isYearInferred ? " (推导时序)" : "首见"}
+            </span>
+          )}
         </div>
         {primaryDoc && (
           <button

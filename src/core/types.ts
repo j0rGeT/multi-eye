@@ -78,6 +78,10 @@ export interface SearchQuery {
    * provider 只负责把最好的那批结果拿回来。
    */
   sortMode?: SortMode;
+  /** 用户选定的行业标签列表（可选）。不填表示搜索全部行业。 */
+  industries?: string[];
+  /** 用户选定的搜索迭代深度。 */
+  depth?: number;
 }
 
 /**
@@ -129,6 +133,8 @@ export interface SearchPlan {
    * 的职责，在这里再拼一次会得到「知乎 知乎」。
    */
   variants: Partial<Record<SiteKey, string>>;
+  /** 用户选定的行业限定标签。 */
+  industries?: string[];
   /** 这份分析是谁给的。`lexical` 表示没走上 LLM，此时行为与加这个功能之前逐字一致。 */
   source: "llm" | "lexical";
   /** `source === "lexical"` 时为什么没走上 LLM。 */
@@ -271,6 +277,8 @@ export interface SearchResult {
    * `verdict === "low"` 的条目，未预判的一律放行。
    */
   value?: ValueAssessment;
+  /** 行业分类匹配判定（只标注，不删除）。 */
+  industryMatch?: { matched: string[]; score: number };
 }
 
 export interface ProviderCapabilities {
@@ -401,6 +409,12 @@ export interface GraphNode {
   /** kind='entity' 时由 LLM 给出的类型：人物/组织/技术/概念。 */
   type?: string;
   aliases?: string[];
+  /** 支撑文档的最早发布年份（用于时间分层与趋势图；保证所有节点均具备年份，缺失时通过拓扑邻居/簇/语料时序推导）。 */
+  publishedYear?: number;
+  /** 年份是否为推导得出（而非支撑文档确切 publishedAt 原生提取）。用于界面区分真实资料时间与推导演进时序。 */
+  isYearInferred?: boolean;
+  /** 支撑文档的最早 ISO 发布时间戳。 */
+  firstPublishedAt?: string;
 }
 
 export interface GraphEdge {
@@ -479,6 +493,10 @@ export interface SessionViewState {
   pinned?: string[];
   /** 是否显示文档节点。 */
   showDocuments?: boolean;
+  /** 拓扑图布局模式：自由力导向(free) 或 按年份分层(yearly)。 */
+  layoutMode?: "free" | "yearly";
+  /** 是否展示拓扑图下方的节点时间趋势折线图。 */
+  showTimeline?: boolean;
 }
 
 /**
@@ -491,6 +509,10 @@ export interface SearchOptions {
   sortMode?: SortMode;
   /** 本次搜索的用户意图提示。 */
   intent?: string;
+  /** 本次搜索选定的行业标签。 */
+  industries?: string[];
+  /** 本次搜索配置的迭代深度。 */
+  depth?: number;
 }
 
 /**
@@ -651,6 +673,8 @@ export type SearchEvent =
        * 却看到一批日期未知的资料，只会以为筛选坏了。
        */
       timeFilter: { dropped: number; unknown: number };
+      /** 行业过滤的统计：有多少条未命中所选行业。 */
+      industryFilter?: { unmatched: number };
     }
   | { type: "error"; message: string };
 

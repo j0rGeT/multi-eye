@@ -33,6 +33,7 @@ import type {
 } from "@/core/types";
 import { chatJson, type ChatMessage } from "@/core/llm/chat";
 import { docId, kwId } from "./heuristic";
+import { annotateNodeTimes } from "./timeline";
 
 /**
  * 调用本身（协议选择、推理模型的额度陷阱、json_object 只保证语法不保证形状、
@@ -400,10 +401,12 @@ function assemble(
     if (!keptIds.has(n.clusterId)) n.clusterId = kept[0]?.id ?? "c0";
   }
 
+  const annotatedNodes = annotateNodeTimes(nodes, allDocs, edges);
+
   return {
     version: 1,
     topic,
-    nodes,
+    nodes: annotatedNodes,
     edges,
     clusters: kept,
     stats: {

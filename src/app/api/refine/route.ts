@@ -3,11 +3,10 @@ import type { RefinementRecord, SearchPlan, SearchResult } from "@/core/types";
 import { refineSession } from "@/core/search/refine";
 import { normalizeUrl } from "@/core/search/normalize";
 import { loadSession, saveSession } from "@/core/store";
+import { config } from "@/core/env";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
-
-const MAX_REFINEMENTS = Math.max(1, Number(process.env.SEARCH_REFINE_MAX ?? 3));
 
 interface RefineBody {
   sessionId?: string;
@@ -40,14 +39,19 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: "请先抓取正文，再进行整理与补搜" }, { status: 409 });
   }
 
+  const maxDepth = Math.max(
+    1,
+    Math.min(10, session.searchOptions?.depth ?? config.searchDepth),
+  );
+
   const current = session.refinements?.length ?? 0;
-  if (current >= MAX_REFINEMENTS) {
+  if (current >= maxDepth) {
     return Response.json(
       {
         done: true,
         iteration: current,
-        maxIterations: MAX_REFINEMENTS,
-        message: `已达到 ${MAX_REFINEMENTS} 轮补搜上限`,
+        maxIterations: maxDepth,
+        message: `已达到 ${maxDepth} 轮补搜上限`,
       },
       { status: 200 },
     );
@@ -82,7 +86,7 @@ export async function POST(req: NextRequest) {
       plan,
       total: merged.length,
       iteration: record.iteration,
-      maxIterations: MAX_REFINEMENTS,
+      maxIterations: maxDepth,
     });
   } catch (err) {
     return Response.json(

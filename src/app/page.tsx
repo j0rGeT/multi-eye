@@ -40,6 +40,8 @@ import DocumentPreview from "@/components/DocumentPreview";
 export default function Home() {
   const [query, setQuery] = useState("");
   const [intent, setIntent] = useState("");
+  const [industries, setIndustries] = useState<string[]>([]);
+  const [depth, setDepth] = useState<number>(3);
   const [sites, setSites] = useState<SiteKey[]>(DEFAULT_SITES);
   const [timeRange, setTimeRange] = useState<TimeRange | "">("");
   const [sortMode, setSortMode] = useState<SortMode>("relevant");
@@ -82,7 +84,6 @@ export default function Home() {
    */
   const [refinements, setRefinements] = useState<RefinementRecord[]>([]);
   const refineIteration = refinements.length;
-  const REFINE_MAX = 3;
   /** 自动流水线（整理 → 补搜 → 抓取 → 再整理）是否在跑。 */
   const [pipelining, setPipelining] = useState(false);
   /** 流水线当前阶段，进度条之外的一句话。 */
@@ -141,6 +142,8 @@ export default function Home() {
 
         setQuery(session.topic.query);
         setIntent(session.topic.intent ?? session.searchOptions?.intent ?? "");
+        setIndustries(session.searchOptions?.industries ?? []);
+        setDepth(session.searchOptions?.depth ?? 3);
         setSites(session.topic.sites);
         // 还原当时的检索口径。旧会话没有这两个字段（那时还没这功能），
         // 回退到「不限 / 印证优先」，也就是它的结果本来就是按这个口径出的
@@ -231,6 +234,8 @@ export default function Home() {
           {
             query: query.trim(),
             intent: intent.trim() || undefined,
+            industries: industries.length > 0 ? industries : undefined,
+            depth,
             sites,
             // 空串表示不限，服务端不认这个值，这里先归一成 undefined
             timeRange: timeRange || undefined,
@@ -292,7 +297,7 @@ export default function Home() {
 
       return sid ? { sessionId: sid, total } : null;
     },
-    [query, intent, sites, timeRange, sortMode],
+    [query, intent, industries, depth, sites, timeRange, sortMode],
   );
 
   const runSearch = useCallback(async () => {
@@ -545,7 +550,8 @@ export default function Home() {
       let addedTotal = 0;
       let fetchedTotal = 0;
 
-      for (let round = 1; round <= REFINE_MAX; round++) {
+      const maxDepth = depth || 3;
+      for (let round = 1; round <= maxDepth; round++) {
         setPipelineStage(`${stagePrefix}整理已抓正文…`);
         const { record, added, done, message } = await refineCore(sid, signal);
         if (!record) {
@@ -591,7 +597,7 @@ export default function Home() {
 
       return { rounds, addedTotal, fetchedTotal };
     },
-    [fetchCore, refineCore],
+    [fetchCore, refineCore, depth],
   );
 
   const runPipeline = useCallback(async () => {
@@ -611,7 +617,7 @@ export default function Home() {
       );
       if (rounds > 0) {
         setRefineNotice(
-          `流水线完成：${rounds}/${REFINE_MAX} 轮，新增 ${addedTotal} 条结果、` +
+          `流水线完成：${rounds}/${depth} 轮，新增 ${addedTotal} 条结果、` +
             `抓取 ${fetchedTotal} 篇正文。可以继续「构建知识拓扑」，或下载与预览。`,
         );
       }
@@ -621,7 +627,7 @@ export default function Home() {
       setPipelining(false);
       setPipelineStage(null);
     }
-  }, [sessionId, pipelining, searching, fetching, refining, pipelineCore]);
+  }, [sessionId, pipelining, searching, fetching, refining, pipelineCore, depth]);
 
   // ── 构图 ──
   /**
@@ -767,7 +773,7 @@ export default function Home() {
 
       if (rounds > 0) {
         setRefineNotice(
-          `调研完成：搜索 → 抓取 → ${rounds}/${REFINE_MAX} 轮整理补搜 → 拓扑已就绪。`,
+          `调研完成：搜索 → 抓取 → ${rounds}/${depth} 轮整理补搜 → 拓扑已就绪。`,
         );
       } else {
         setRefineNotice("调研完成：拓扑已就绪。可以预览资料、下载，或继续补搜。");
@@ -1008,6 +1014,10 @@ export default function Home() {
               onQueryChange={setQuery}
               intent={intent}
               onIntentChange={setIntent}
+              industries={industries}
+              onIndustriesChange={setIndustries}
+              depth={depth}
+              onDepthChange={setDepth}
               sites={sites}
               timeRange={timeRange}
               onTimeRangeChange={setTimeRange}
@@ -1039,7 +1049,7 @@ export default function Home() {
               refineNotice={refineNotice}
               refinements={refinements}
               refineIteration={refineIteration}
-              refineMax={REFINE_MAX}
+              refineMax={depth}
               onPipeline={() => void runPipeline()}
               onResearch={() => void runResearch()}
               pipelining={pipelining}

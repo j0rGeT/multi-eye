@@ -37,6 +37,8 @@ import { formatSignalValue, signalSummary } from "@/core/signals";
 import { methodLabel } from "./NodeDetail";
 import FeedPanel from "./FeedPanel";
 import ZhihuLogin from "./ZhihuLogin";
+import IndustryPicker from "./IndustryPicker";
+import { industryClause } from "@/core/search/industries";
 import type { Document } from "@/core/types";
 
 /** 排序模式的一句话解释 —— 挂在下拉框的 title 上。 */
@@ -59,6 +61,13 @@ export interface SearchPanelProps {
   onToggleSite: (s: SiteKey) => void;
   onSearch: () => void;
   searching: boolean;
+
+  /** 用户选定的行业标签列表 */
+  industries: string[];
+  onIndustriesChange: (tags: string[]) => void;
+  /** 搜索迭代深度 (1~6，默认 3) */
+  depth: number;
+  onDepthChange: (depth: number) => void;
 
   /** 时效窗口。空串表示不限。 */
   timeRange: TimeRange | "";
@@ -120,6 +129,7 @@ export interface SearchPanelProps {
 export default function SearchPanel(props: SearchPanelProps) {
   const {
     query, onQueryChange, intent, onIntentChange, sites, onToggleSite, onSearch, searching,
+    industries, onIndustriesChange, depth, onDepthChange,
     timeRange, onTimeRangeChange, sortMode, onSortModeChange, timeFilter,
     plan, results, logs, siteCounts,
     documents, onFetch, onPreviewDocument, fetching, fetchProgress, fetchNotice,
@@ -150,6 +160,10 @@ export default function SearchPanel(props: SearchPanelProps) {
       clauses.push(
         `(${related.slice(0, 4).map((term) => `"${term.trim()}"`).join(" OR ")})`,
       );
+    }
+    const indClause = industryClause(plan.industries);
+    if (indClause) {
+      clauses.push(indClause);
     }
     return clauses.join(" ");
   };
@@ -236,6 +250,13 @@ export default function SearchPanel(props: SearchPanelProps) {
           />
         </label>
 
+        {/* 行业分类多选/自填组件 */}
+        <IndustryPicker
+          value={industries}
+          onChange={onIndustriesChange}
+          disabled={searching}
+        />
+
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
           {allSites.map((s) => {
             const on = sites.includes(s);
@@ -307,6 +328,24 @@ export default function SearchPanel(props: SearchPanelProps) {
           </label>
 
           <label className="dim" style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            深度
+            <select
+              className="input"
+              style={{ padding: "3px 6px", fontSize: 12, width: "auto" }}
+              value={depth}
+              onChange={(e) => onDepthChange(Number(e.target.value))}
+              disabled={searching}
+              title="搜索与技术迭代深度（1~6轮，默认3轮），每轮提取技术细节并扩展检索词"
+            >
+              {[1, 2, 3, 4, 5, 6].map((d) => (
+                <option key={d} value={d}>
+                  {d} 轮 {d === 3 ? "（默认）" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="dim" style={{ display: "flex", gap: 6, alignItems: "center" }}>
             排序
             <select
               className="input"
@@ -335,6 +374,13 @@ export default function SearchPanel(props: SearchPanelProps) {
             <div style={{ fontSize: 12, marginBottom: 6 }}>
               <span className="dim">用户意图：</span>
               {plan.userIntent}
+            </div>
+          )}
+
+          {plan.industries && plan.industries.length > 0 && (
+            <div style={{ fontSize: 12, marginBottom: 6 }}>
+              <span className="dim">限定行业：</span>
+              {plan.industries.join("、")}
             </div>
           )}
 
@@ -910,6 +956,12 @@ function ResultList({
     (r) => r.value?.verdict === "low",
   ).length;
 
+  /* 暂时隐藏未命中所选行业的结果，默认关 */
+  const [hideUnmatchedIndustry, setHideUnmatchedIndustry] = useState(false);
+  const unmatchedIndustryCount = results.filter(
+    (r) => r.industryMatch && r.industryMatch.matched.length === 0,
+  ).length;
+
   /*
     「全部 / 仅视频 / 仅图文」——**默认全部**。
 
@@ -926,7 +978,14 @@ function ResultList({
     (hideIrrelevant
       ? results.filter((r) => r.relevance?.verdict !== "unlikely")
       : results
-    ).filter((r) => !hideLowValueResults || r.value?.verdict !== "low"),
+    )
+      .filter((r) => !hideLowValueResults || r.value?.verdict !== "low")
+      .filter(
+        (r) =>
+          !hideUnmatchedIndustry ||
+          !r.industryMatch ||
+          r.industryMatch.matched.length > 0,
+      ),
     kindFilter,
     (r) => contentKind(r.site, r.url),
   );
@@ -1100,6 +1159,37 @@ function ResultList({
             {hideLowValueResults
               ? "恢复显示"
               : `暂时隐藏这 ${lowValueCount} 条`}
+          </button>
+        </p>
+      )}
+
+      {/* 行业过滤提示 */}
+      {unmatchedIndustryCount > 0 && (
+        <p className="dim" style={{ fontSize: 11, margin: "0 0 10px" }}>
+          有{" "}
+          <span style={{ color: "var(--fg-dim)" }}>
+            {unmatchedIndustryCount} 条未命中所选行业
+          </span>
+          （保留在列表中供核查）。
+          <button
+            className="badge"
+            onClick={() => setHideUnmatchedIndustry((v) => !v)}
+            title={
+              hideUnmatchedIndustry
+                ? "恢复显示全部结果。"
+                : "暂时隐藏未命中所选行业的结果。"
+            }
+            style={{
+              marginLeft: 6,
+              cursor: "pointer",
+              color: hideUnmatchedIndustry ? "var(--accent)" : "var(--fg-dim)",
+              borderColor: hideUnmatchedIndustry ? "#1f6feb66" : "var(--border)",
+              background: hideUnmatchedIndustry ? "#1f6feb15" : "transparent",
+            }}
+          >
+            {hideUnmatchedIndustry
+              ? "恢复显示"
+              : `暂时隐藏这 ${unmatchedIndustryCount} 条`}
           </button>
         </p>
       )}
@@ -1288,6 +1378,14 @@ function ResultList({
                           title={`为什么标它：${r.value.reason}\n（预判分类：${r.value.category}）\n\n只凭标题与摘要的第一印象；抓取时会默认跳过，但结果仍在列表与报告里。`}
                         >
                           · 预判低价值
+                        </span>
+                      )}
+                      {r.industryMatch && r.industryMatch.matched.length > 0 && (
+                        <span
+                          style={{ color: "var(--accent)" }}
+                          title={`命中所选行业：${r.industryMatch.matched.join("、")}`}
+                        >
+                          · 行业：{r.industryMatch.matched.join("/")}
                         </span>
                       )}
                       {doc && <BodyBadge doc={doc} />}
