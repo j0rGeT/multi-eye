@@ -12,7 +12,7 @@
  */
 
 import type { Cluster } from "@/core/types";
-import { clusterColor } from "@/core/graph/palette";
+import { clusterColor, type GraphStyleKey } from "@/core/graph/palette";
 
 export interface GraphLegendProps {
   clusters: Cluster[];
@@ -20,12 +20,15 @@ export interface GraphLegendProps {
   onFocus: (cluster: Cluster) => void;
   /** 当前聚焦的簇 id，用于高亮那一行。 */
   activeId?: string | null;
+  /** 当前图风格，让图例圆点颜色与画布节点一致。 */
+  graphStyle?: GraphStyleKey;
 }
 
 export default function GraphLegend({
   clusters,
   onFocus,
   activeId,
+  graphStyle = "default",
 }: GraphLegendProps) {
   // 只有一个簇时图例没有信息量（整张图同色），不显示
   if (clusters.length <= 1) return null;
@@ -40,7 +43,10 @@ export default function GraphLegend({
           onClick={() => onFocus(c)}
           title={`聚焦「${c.label}」：${c.size} 个概念、${c.docIds.length} 篇资料`}
         >
-          <span className="dot" style={{ background: clusterColor(i) }} />
+          <span
+            className="dot"
+            style={{ background: clusterColor(i, graphStyle) }}
+          />
           <span className="glegend-label">{c.label}</span>
           <span className="dim glegend-size">{c.size}</span>
         </button>

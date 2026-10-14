@@ -23,6 +23,7 @@ import type { Document, DownloadKind } from "@/core/types";
 import { config, ytdlpCommonArgs, ytdlpYoutubeArgs } from "@/core/env";
 import { docKind } from "@/core/kind";
 import { httpFetch } from "@/core/fetch/agent";
+import { canonicalBilibiliUrl } from "@/core/fetch/bilibili";
 import { isYoutubeUrl } from "@/core/fetch/youtube";
 import { renderDocMarkdown, renderDocTranscript } from "@/core/export/docmarkdown";
 
@@ -342,7 +343,28 @@ function ytdlpReason(stderr: string): string {
   const errorLine = [...lines].reverse().find((l) => l.startsWith("ERROR:"));
   const line = errorLine ?? lines[lines.length - 1];
   if (!line) return "";
-  return `：${line.replace(/^ERROR:\s*/, "").slice(0, 200)}`;
+  const raw = line.replace(/^ERROR:\s*/, "");
+
+  /*
+    yt-dlp 拿到的是一个网页而不是视频流 —— 它准备把 `xxx.html` 当成媒体文件
+    写盘，被自己的安全检查拦下。原话后面跟着一整段「请去 GitHub 报告」的
+    模板，既占满了 200 字的截断预算，也完全说不清用户这边该怎么办，
+    所以翻译成能定位的话。（带语言前缀的 B 站链接是这条错误最集中的来源，
+    已由 `canonicalBilibiliUrl` 在源头归一化；这里留着它兜住其余成因。）
+  */
+  if (/extracted extension \('html'\) is unusual/.test(raw)) {
+    return "：这个地址返回的是网页而不是视频流，yt-dlp 无法下载";
+  }
+
+  /*
+    B 站未登录高频访问或特定视频下发 v_voucher 人机风控凭据时，yt-dlp 会报
+    「No video formats found!」。将冗长的英文模板翻译为直观的故障指引。
+  */
+  if (/No video formats found/i.test(raw)) {
+    return "：未能获取到可用视频格式（可能触发了平台的访问频率限制或需要登录验证，请稍后重试）";
+  }
+
+  return `：${raw.slice(0, 200)}`;
 }
 
 async function downloadMedia(ctx: RunContext): Promise<number> {
@@ -350,14 +372,25 @@ async function downloadMedia(ctx: RunContext): Promise<number> {
   const dir = join(assetsDir, plan.outputPath);
   await mkdir(dir, { recursive: true });
 
+  /*
+    B 站 URL 先归一化再交给 yt-dlp。
+
+    带语言前缀（`/en/video/`、`/zh-Hans/video/`）和合集页顺出来的
+    （`/list/…?bvid=`）这两种形态到不了 yt-dlp 的 B 站解析器，它会退回
+    generic 解析器把整张网页当成媒体流，最后报
+    「The extracted extension ('html') is unusual」并以退出码 1 结束。
+    实测记录与归一化规则见 `canonicalBilibiliUrl`。
+  */
+  const mediaUrl = canonicalBilibiliUrl(doc.url);
+
   const args = [
     /*
-      按 `doc.url` 分流：这条路上什么站点都可能出现 —— YouTube 得走代理，
+      按 `mediaUrl` 分流：这条路上什么站点都可能出现 —— YouTube 得走代理，
       而 B站必须直连（系统级代理会被 yt-dlp 自动继承，只靠不传 --proxy 是
       挡不住的，见 `ytdlpCommonArgs` 上的实测记录）。此前这里是无条件挂代理，
       于是所有 B站视频下载都以「yt-dlp 退出码 1 / TLS 握手超时」告终。
     */
-    ...ytdlpCommonArgs(doc.url),
+    ...ytdlpCommonArgs(mediaUrl),
     /*
       换 android 端点**只在 YouTube 上做**。
 
@@ -366,7 +399,7 @@ async function downloadMedia(ctx: RunContext): Promise<number> {
       「靠它自己忽略」不如**显式判一下**：万一将来 yt-dlp 改成对未知命名
       空间报错，受影响的是整条 B 站下载链，而那种失败只会在真跑时才暴露。
     */
-    ...(isYoutubeUrl(doc.url) ? ytdlpYoutubeArgs() : []),
+    ...(isYoutubeUrl(mediaUrl) ? ytdlpYoutubeArgs() : []),
     // 续传：yt-dlp 会接着 .part 文件下，与 HTTP 那条路的 Range 是同一目的
     "--continue",
     "--progress",
@@ -378,7 +411,7 @@ async function downloadMedia(ctx: RunContext): Promise<number> {
     join(dir, "%(title).60s.%(ext)s"),
     "--print",
     "after_move:filepath",
-    doc.url,
+    mediaUrl,
   ];
 
   const child = execFile(config.ytdlpPath, args, {

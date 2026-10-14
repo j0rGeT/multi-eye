@@ -29,10 +29,11 @@
 import type { Document, ExtractMethod, SearchResult } from "@/core/types";
 import { config } from "@/core/env";
 import { fetchHtml } from "./http";
+import type { Extraction } from "./readability";
 import { extractWithReadability, looksLikeCode, looksLikeSpa } from "./readability";
 import { boilerplateReason } from "./boilerplate";
 import { knownLimitation } from "./limitations";
-import { loggedInFor } from "@/core/auth/store";
+import { isLoggedIn, loggedInFor } from "@/core/auth/store";
 import { contentKind } from "@/core/kind";
 import { fetchWithBrowser, isPlaywrightAvailable } from "./playwright";
 import { fetchTranscript, isYoutubeUrl } from "./youtube";
@@ -90,12 +91,12 @@ export async function extractMany(
   const tasks = results.map((r) =>
     gate(() => {
       /*
-        知乎单独串行：它的风控对并发很敏感，四路同时打开会显著增加 412/403。
+        知乎和小红书单独串行：它们的风控对并发极其敏感，多路同时打开会显著增加 412/403/重定向。
         其它站点仍走全局并发，避免因为一个平台把整批抓取拖慢。
       */
       const siteGate = limiter(
         `extract:${r.site}`,
-        r.site === "zhihu" ? 1 : concurrency,
+        r.site === "zhihu" || r.site === "xiaohongshu" ? 1 : concurrency,
       );
       return siteGate(async () => {
         const doc = await extractOne(r, opts.signal, budget);
@@ -246,6 +247,39 @@ export async function extractOne(
   // ── 三级：HTTP + Readability ──
   const res = await fetchHtml(result.url, { signal });
 
+  /*
+    HTTP 这一趟**失败**时（403 / 超时 / 连不上），不是立刻兜底 —— 先问一次
+    无头浏览器。
+
+    这条路是补上的。`wantsBrowser` 原先整个写在 `if (res.ok && res.body)` 里面，
+    于是 403 这条**最常见的知乎失败永远走不到浏览器**：知乎对未登录游客一律回
+    403，而无头浏览器带着用户自己扫码拿到的登录态能正常拿到正文。结果就是
+    「明明登录了，抓出来还是只有搜索摘要」—— 用户查不出原因，因为代码里
+    根本没有那一步。
+
+    失败恰恰是最该换一条路的信号：HTTP 层被拒的是「一个裸请求」，浏览器带的
+    是完整渲染环境 + 登录 cookie，两者不是一回事。
+
+    门槛收得很紧（见 `browserWorthRetry`）：只有**手上有登录态**的站点
+    才走 —— 没有 cookie 时换浏览器只是换一种方式被同一个 403 拒掉，白白烧掉
+    一个全局配额（默认 8 页），同轮真正需要渲染的 JS 空壳页就没有名额了。
+  */
+  if (!(res.ok && res.body) && (await browserWorthRetry(result, budget))) {
+    const viaBrowser = await runBrowserLevel(result, null, signal, budget, t0);
+    if (viaBrowser.doc) return viaBrowser.doc;
+    /*
+      浏览器也没救回来。把两件事**一起**写进 error，而不是让后者盖掉前者：
+      「HTTP 403」是发生了什么，「浏览器也试过」是我们做了什么。少了前者，
+      排查时看不出原始失败；少了后者，用户会以为我们没试过别的办法。
+
+      前者必须留在串里：`knownLimitation` 靠 `HTTP 40[13]` 这个特征串认出
+      知乎限制，整段换掉它认不出来的话，403 会被当成一次普通故障报给用户。
+    */
+    browserSkip = viaBrowser.skip
+      ? `${res.error ?? "抓取失败"}；已尝试无头浏览器：${viaBrowser.skip}`
+      : res.error;
+  }
+
   if (res.ok && res.body) {
     const extraction = extractWithReadability(res.body, res.finalUrl);
 
@@ -316,68 +350,10 @@ export async function extractOne(
       不试的原因**必须留下来**：下面两条降级路径会把 `browserSkip` 写进 `error`
       （声明在函数顶部，见那里的说明）。
     */
-    const wantsBrowser =
-      config.playwrightMode === "always" ||
-      (config.playwrightMode === "on-demand" &&
-        (looksLikeSpa(res.body, extraction) ||
-          /*
-            知乎的静态 HTML 即便不是典型 SPA 空壳，也常只给一段被截断的
-            回答预览。正文容器一旦过短就直接走浏览器，用登录态拿完整正文；
-            这条额外判据只对知乎生效，不改变其它站点的降级成本。
-          */
-          (result.site === "zhihu" && extraction.thin)));
-
-    if (wantsBrowser && (await isPlaywrightAvailable())) {
-      if (!takePlaywrightSlot(budget)) {
-        browserSkip =
-          `疑似动态渲染，本轮无头浏览器配额（${config.playwrightMaxPagesPerRun} 页）已用完` +
-          `。调大 PLAYWRIGHT_MAX_PAGES_PER_RUN 或减少一次抓取的篇数。`;
-      } else {
-        const br = await fetchWithBrowser(result.url, { signal });
-        if (br.html) {
-          // 站点专用选择器命中时直接用，比再跑一次 Readability 准。
-          // 但仍要过一遍代码检测：选择器可能框到了一块内联 JSON。
-          if (
-            br.selectorText &&
-            br.selectorText.length > 200 &&
-            !looksLikeCode(br.selectorText)
-          ) {
-            return buildDoc(result, {
-              method: "playwright",
-              text: br.selectorText,
-              markdown: br.selectorText,
-              title: extraction.title || result.title,
-              images: extraction.images,
-              /*
-                别把第一次 HTTP 那趟已经读到的日期丢掉。
-
-                这一支换的是正文来源（静态 HTML → 无头浏览器渲染结果），
-                和日期没有关系；`extraction` 是从静态 HTML 解析出来的，
-                它的 publishedAt 与这次替换无关，仍然有效。
-              */
-              publishedAt: extraction.publishedAt ?? result.publishedAt,
-              lang: extraction.lang,
-              startedAt: t0,
-            });
-          }
-          const re = extractWithReadability(br.html, result.url);
-          if (!re.thin) {
-            return buildDoc(result, {
-              method: "playwright",
-              text: re.text,
-              markdown: re.markdown,
-              title: re.title || result.title,
-              images: re.images,
-              author: re.byline ?? result.author,
-              publishedAt: re.publishedAt ?? result.publishedAt,
-              lang: re.lang,
-              startedAt: t0,
-            });
-          }
-        }
-        // 浏览器跑了但也没抽出东西 —— 也要说清是「跑了没用」而不是「没跑」
-        browserSkip = "已用无头浏览器渲染，仍没抽到正文";
-      }
+    if (wantsBrowserLevel(result, res.body, extraction)) {
+      const viaBrowser = await runBrowserLevel(result, extraction, signal, budget, t0);
+      if (viaBrowser.doc) return viaBrowser.doc;
+      browserSkip = viaBrowser.skip;
     }
 
     // Readability 拿到了一点东西但不完整 —— 仍比纯摘要强，标 raw 并说明原因
@@ -409,6 +385,164 @@ export async function extractOne(
     {},
     budget,
   );
+}
+
+// ─────────────────────────── 四级：无头浏览器 ───────────────────────────
+
+/**
+ * 正文拿到了但是空壳（`thin`）时，`on-demand` 模式下要不要花一个浏览器名额。
+ *
+ * `always` 每篇都试、`off` 从不试，两个都不用判页面；只有 `on-demand` 要看页
+ * 长什么样，所以判据都收敛在这里，而不是散在调用点。
+ *
+ * 知乎那条**额外**判据是刻意单列的：它的静态 HTML 通常不是典型 SPA 空壳
+ * （`id="app"` 这类标记一个都没有），`looksLikeSpa` 认不出来；但它给的常常
+ * 只是「展开阅读全文」之前的两三百字预览。正文一旦过短就直接走浏览器，用
+ * 登录态拿完整正文 —— 只对知乎生效，不改变其它站点的降级成本。
+ */
+function wantsBrowserLevel(
+  result: SearchResult,
+  html: string,
+  extraction: Extraction,
+): boolean {
+  if (config.playwrightMode === "always") return true;
+  if (config.playwrightMode !== "on-demand") return false;
+  return (
+    looksLikeSpa(html, extraction) ||
+    ((result.site === "zhihu" || result.site === "xiaohongshu" || result.site === "wechat") &&
+      extraction.thin)
+  );
+}
+
+/**
+ * HTTP 那一趟**整趟失败**（403 / 超时 / 连不上）之后，还要不要让无头浏览器再试一次。
+ *
+ * ── 为什么这条路上原来一步都没有 ──
+ *
+ * `wantsBrowserLevel` 原先整个写在 `if (res.ok && res.body)` 里面，于是
+ * 「请求本身失败」这条路永远到不了浏览器 —— 而这恰恰是最需要换一条路的信号：
+ * 被拒的是一个裸 HTTP 请求，浏览器带的是完整渲染环境 + 登录 cookie。
+ * 知乎未登录游客一律 403 是最大的一类失败，用户明明登录了也照样只有摘要，
+ * 就是因为这里根本没有那一步。
+ *
+ * ── 为什么门槛收得比 `wantsBrowserLevel` 还紧 ──
+ *
+ * `on-demand` 下只对**手上有登录态**的站点开这一路：浏览器之所以可能成功，
+ * 靠的就是 `cookiesFor()` 里那份用户自己扫码拿到的 cookie（目前只有知乎有）。
+ * 没有 cookie 时换浏览器只是换一种方式被同一个 403 拒掉，白烧一个全局配额
+ * （默认 8 页）—— 那个配额是同轮所有页面共享的，烧在一个注定失败的站点上，
+ * 真正需要渲染的 JS 空壳页就没有名额了。
+ *
+ * `always` 则是「每篇都试」的字面语义，失败也不例外。
+ */
+async function browserWorthRetry(
+  result: SearchResult,
+  budget: ExtractBudget | undefined,
+): Promise<boolean> {
+  if (config.playwrightMode === "off") return false;
+  if (config.playwrightMode !== "always") {
+    const loggedIn = budget
+      ? !!budget.loggedIn[result.site]
+      : await isLoggedIn(result.site);
+    if (!loggedIn) return false;
+  }
+  return true;
+}
+
+interface BrowserOutcome {
+  /** 抽到正文时给出文档；没抽到为 null。 */
+  doc: Document | null;
+  /** 没走成 / 走了没用的原因。写进 `browserSkip`，最终进 `doc.error`。 */
+  skip?: string;
+}
+
+/**
+ * 四级降级（无头浏览器）的实现，**两条**调用路径共用：
+ *
+ *   1. HTTP 拿到了 HTML、但正文过短（原有路径）
+ *   2. HTTP 这一趟直接失败（本次新增，见 `browserWorthRetry`）
+ *
+ * 两条路径的差别只在 `extraction`：第 2 条没有静态 HTML 可解析，传 null ——
+ * 于是所有从 `extraction` 取的字段都退回 `result` 里搜索层给的值，日期与
+ * 标题不会因为「换了一条路」而凭空消失。
+ *
+ * 抽不出来时**返回 null + skip 而不是抛异常**：单篇失败不该打断整批，
+ * 原因由调用方写进 `browserSkip`，最终落成 `doc.error`（见文件头的约定）。
+ */
+async function runBrowserLevel(
+  result: SearchResult,
+  extraction: Extraction | null,
+  signal: AbortSignal | undefined,
+  budget: ExtractBudget | undefined,
+  t0: number,
+): Promise<BrowserOutcome> {
+  if (!(await isPlaywrightAvailable())) {
+    return {
+      doc: null,
+      skip: "已启用无头浏览器，但本机没有可用的浏览器二进制（npx playwright install chromium）",
+    };
+  }
+
+  // 先问要名额、再开页面：扣不到名额时一个浏览器都不该起
+  if (!takePlaywrightSlot(budget)) {
+    return {
+      doc: null,
+      skip:
+        `本轮无头浏览器配额（${config.playwrightMaxPagesPerRun} 页）已用完` +
+        `。调大 PLAYWRIGHT_MAX_PAGES_PER_RUN 或减少一次抓取的篇数。`,
+    };
+  }
+
+  const br = await fetchWithBrowser(result.url, { signal });
+  if (br.html) {
+    // 站点专用选择器命中时直接用，比再跑一次 Readability 准。
+    // 但仍要过一遍代码检测：选择器可能框到了一块内联 JSON。
+    if (
+      br.selectorText &&
+      br.selectorText.length > 200 &&
+      !looksLikeCode(br.selectorText)
+    ) {
+      return {
+        doc: buildDoc(result, {
+          method: "playwright",
+          text: br.selectorText,
+          markdown: br.selectorText,
+          title: extraction?.title || result.title,
+          images: extraction?.images,
+          /*
+            别把第一次 HTTP 那趟已经读到的日期丢掉。
+
+            这一支换的是正文来源（静态 HTML → 无头浏览器渲染结果），
+            和日期没有关系；`extraction` 是从静态 HTML 解析出来的，
+            它的 publishedAt 与这次替换无关，仍然有效。
+          */
+          publishedAt: extraction?.publishedAt ?? result.publishedAt,
+          lang: extraction?.lang,
+          startedAt: t0,
+        }),
+      };
+    }
+
+    const re = extractWithReadability(br.html, result.url);
+    if (!re.thin) {
+      return {
+        doc: buildDoc(result, {
+          method: "playwright",
+          text: re.text,
+          markdown: re.markdown,
+          title: re.title || extraction?.title || result.title,
+          images: re.images,
+          author: re.byline ?? result.author,
+          publishedAt: re.publishedAt ?? extraction?.publishedAt ?? result.publishedAt,
+          lang: re.lang,
+          startedAt: t0,
+        }),
+      };
+    }
+  }
+
+  // 浏览器跑了但也没抽出东西 —— 也要说清是「跑了没用」而不是「没跑」
+  return { doc: null, skip: "已用无头浏览器渲染，仍没抽到正文" };
 }
 
 // ─────────────────────────── 构造工具 ───────────────────────────

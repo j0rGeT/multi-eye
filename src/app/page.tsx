@@ -30,9 +30,15 @@ import type {
 } from "@/core/types";
 import { formatDate, relativeTime } from "@/core/time";
 import { DEFAULT_SITES } from "@/core/search/sites";
+import {
+  DEFAULT_GRAPH_STYLE,
+  resolveGraphStyle,
+  type GraphStyleKey,
+} from "@/core/graph/palette";
 import { postSse } from "@/components/postSse";
 import SearchPanel from "@/components/SearchPanel";
 import GraphView from "@/components/graph/GraphView";
+import GraphView3D from "@/components/graph/GraphView3D";
 import NodeDetail from "@/components/NodeDetail";
 import DownloadPanel from "@/components/DownloadPanel";
 import DocumentPreview from "@/components/DocumentPreview";
@@ -100,6 +106,8 @@ export default function Home() {
   /** 当前打开的资料预览。文章走 Markdown，视频走平台播放器。 */
   const [previewDocument, setPreviewDocument] = useState<Document | null>(null);
   const [showDocuments, setShowDocuments] = useState(true);
+  const [graphStyle, setGraphStyle] = useState<GraphStyleKey>(DEFAULT_GRAPH_STYLE);
+  const [graphDimension, setGraphDimension] = useState<"2d" | "3d">("2d");
 
   /**
    * 上次离开这张图时的位置与锁定。只在挂载时交给 GraphView 读一次，
@@ -125,6 +133,15 @@ export default function Home() {
    * 但页面状态只活在内存里，刷新一次就找不回那个任务的入口了。
    */
   useEffect(() => {
+    const savedStyle = localStorage.getItem(GRAPH_STYLE_KEY);
+    if (savedStyle) {
+      setGraphStyle(resolveGraphStyle(savedStyle));
+    }
+    const savedDimension = localStorage.getItem(GRAPH_DIMENSION_KEY);
+    if (savedDimension === "3d" || savedDimension === "2d") {
+      setGraphDimension(savedDimension);
+    }
+
     const last = localStorage.getItem(LAST_SESSION_KEY);
     if (!last) return;
     let cancelled = false;
@@ -176,6 +193,28 @@ export default function Home() {
     setSites((prev) =>
       prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s],
     );
+  }, []);
+
+  const handleStyleChange = useCallback((nextStyle: GraphStyleKey) => {
+    setGraphStyle(nextStyle);
+    try {
+      localStorage.setItem(GRAPH_STYLE_KEY, nextStyle);
+    } catch {
+      // 忽略存储异常
+    }
+  }, []);
+
+  /** 2D 平面 ↔ 3D 星云。偏好跟着浏览器走，跟会话无关。 */
+  const handleToggleDimension = useCallback(() => {
+    setGraphDimension((prev) => {
+      const next = prev === "2d" ? "3d" : "2d";
+      try {
+        localStorage.setItem(GRAPH_DIMENSION_KEY, next);
+      } catch {
+        // 忽略存储异常
+      }
+      return next;
+    });
   }, []);
 
   /**
@@ -1065,17 +1104,39 @@ export default function Home() {
                 位置表、锁定集合都是「一张图」的东西，跨会话复用会把上一个
                 主题的坐标带进来。
               */
-              <GraphView
-                key={sessionId ?? "pending"}
-                graph={graph}
-                selectedId={selected?.id}
-                onSelect={setSelected}
-                showDocuments={showDocuments}
-                initialView={viewState}
-                onViewChange={handleViewChange}
-                documents={documents}
-                onOpenDocument={setPreviewDocument}
-              />
+              graphDimension === "3d" ? (
+                <GraphView3D
+                  key={sessionId ?? "pending"}
+                  graph={graph}
+                  selectedId={selected?.id}
+                  onSelect={setSelected}
+                  showDocuments={showDocuments}
+                  graphStyle={graphStyle}
+                  onStyleChange={handleStyleChange}
+                  initialView={viewState}
+                  onViewChange={handleViewChange}
+                  documents={documents}
+                  onOpenDocument={setPreviewDocument}
+                  dimensionMode="3d"
+                  onToggleDimension={handleToggleDimension}
+                />
+              ) : (
+                <GraphView
+                  key={sessionId ?? "pending"}
+                  graph={graph}
+                  selectedId={selected?.id}
+                  onSelect={setSelected}
+                  showDocuments={showDocuments}
+                  graphStyle={graphStyle}
+                  onStyleChange={handleStyleChange}
+                  initialView={viewState}
+                  onViewChange={handleViewChange}
+                  documents={documents}
+                  onOpenDocument={setPreviewDocument}
+                  dimensionMode="2d"
+                  onToggleDimension={handleToggleDimension}
+                />
+              )
             ) : (
               <div className="empty">
                 {building ? (
@@ -1307,3 +1368,7 @@ function StaleBanner({
 
 /** 上次用的会话 id。见挂载时那段恢复逻辑。 */
 const LAST_SESSION_KEY = "mutieye:lastSession";
+/** 拓扑图色彩风格偏好。 */
+const GRAPH_STYLE_KEY = "mutieye:graphStyle";
+/** 拓扑图维度偏好（2D 平面 / 3D 星云）。 */
+const GRAPH_DIMENSION_KEY = "mutieye:graphDimension";

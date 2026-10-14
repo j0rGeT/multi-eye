@@ -16,13 +16,14 @@ import path from "node:path";
 const BASE = process.env.MUTIEYE_BASE ?? "http://localhost:3000";
 
 function parseArgs(argv) {
-  const out = { sessionId: null, out: null, docs: true, width: 1600, seed: 42 };
+  const out = { sessionId: null, out: null, docs: true, width: 1600, seed: 42, style: "default" };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === "--out") out.out = argv[++i];
     else if (a === "--no-docs") out.docs = false;
     else if (a === "--width") out.width = Number(argv[++i]) || 1600;
     else if (a === "--seed") out.seed = Number(argv[++i]) || 42;
+    else if (a === "--style") out.style = argv[++i];
     else if (!a.startsWith("-") && !out.sessionId) out.sessionId = a;
   }
   return out;
@@ -58,6 +59,7 @@ const qs = new URLSearchParams({
   seed: String(args.seed),
 });
 if (!args.docs) qs.set("docs", "0");
+if (args.style && args.style !== "default") qs.set("style", args.style);
 
 const res = await fetch(`${BASE}/api/export/image?${qs}`);
 if (!res.ok) {

@@ -17,10 +17,11 @@
 
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import type { Browser } from "playwright";
+import type { Browser, ElementHandle, Page } from "playwright";
 import { config } from "@/core/env";
 import { shouldProxy } from "@/core/net/domestic";
 import { cookiesFor } from "@/core/auth/store";
+import { ZHIHU_EXPAND_SELECTORS, ZHIHU_EXPAND_TEXT } from "./readability";
 
 /**
  * 用 createRequire 而不是 `await import("playwright")`。
@@ -138,7 +139,18 @@ const SITE_SELECTORS: { match: RegExp; selectors: string[] }[] = [
   },
   {
     match: /xiaohongshu\.com/,
-    selectors: ["#detail-desc", ".note-content", ".desc"],
+    selectors: [
+      "#detail-desc",
+      ".note-content",
+      ".desc",
+      ".interaction-container .note-scroller",
+      ".content-container",
+      ".note-detail-mask",
+    ],
+  },
+  {
+    match: /mp\.weixin\.qq\.com/,
+    selectors: ["#js_content", ".rich_media_content", "#img-content"],
   },
   {
     match: /bilibili\.com/,
@@ -149,6 +161,91 @@ const SITE_SELECTORS: { match: RegExp; selectors: string[] }[] = [
     selectors: ['[data-testid="tweetText"]', "article"],
   },
 ];
+
+/**
+ * 知乎折叠正文的展开。
+ *
+ * ── 为什么必须点一下 ──
+ *
+ * 知乎的回答/专栏在 HTML 里默认是**折叠态**：DOM 里只有「展开阅读全文」之前
+ * 露出的两三百字预览，正文的其余部分要等用户点开才由 XHR 拉回来。所以光把
+ * 页面渲染出来没用 —— 静态侧（`readability.ts` 的 `isCollapsed`）只能看出
+ * 折叠，点不开；真正把全文放出来必须有人去点那个按钮。这一步没法在 jsdom
+ * 里补，只能在真实渲染的页面上做。
+ *
+ * ── 点完要等 ──
+ *
+ * 点击之后正文是异步写进 DOM 的（知乎先收起按钮、再渲染全文），立刻读 innerText
+ * 拿到的仍是旧的预览。800ms 是实测值：更短会稳定读到折叠内容，更长只是白白
+ * 拖慢每一篇（知乎是串行抓取，这个等待会线性累加）。
+ *
+ * ── 不做无限重试 ──
+ *
+ * 上限 20 次：一个问题页有十几个回答，全部展开是合理的；再往上要么是改版后
+ * 选择器误命中了别的按钮，要么是页面结构变了。这两种都该停下来，而不是把
+ * 每篇的浏览器时间拖成几十秒。
+ */
+const EXPAND_WAIT_MS = 800;
+const MAX_EXPAND_CLICKS = 20;
+
+async function expandZhihu(page: Page): Promise<void> {
+  let clicks = 0;
+
+  for (const sel of ZHIHU_EXPAND_SELECTORS) {
+    if (clicks >= MAX_EXPAND_CLICKS) return;
+    const handles = await page.$$(sel).catch(() => []);
+    for (const el of handles) {
+      if (clicks >= MAX_EXPAND_CLICKS) return;
+      if (!(await shouldClick(el))) continue;
+      clicks += 1;
+      await el.click({ timeout: 2_000 }).catch(() => {});
+      await page.waitForTimeout(EXPAND_WAIT_MS).catch(() => {});
+    }
+  }
+}
+
+/**
+ * 这个按钮现在该不该点。
+ *
+ * 按**文案**判而不是「匹配到了就点」：选择器里有一条 `button[class*='expand' i]`
+ * 这种宽匹配，改版后很容易框到「展开评论」「展开目录」这类按钮，点了只是浪费
+ * 时间还可能把页面状态弄乱。已经展开过的段落按钮会变回「收起」，同样不该再点。
+ *
+ * 文案读不出来（元素被移除/隐藏）时按「该点」处理 —— 宁可多点一次，也不要把
+ * 一个真的展开按钮因为 innerText 的一次瞬时失败放过。
+ */
+async function shouldClick(el: ElementHandle): Promise<boolean> {
+  const text = (await el.innerText().catch(() => "")).trim();
+  if (!text) return true;
+  return ZHIHU_EXPAND_TEXT.test(text);
+}
+
+/**
+ * 这个正文容器是不是**还**处于折叠态（展开点过之后再确认一次）。
+ *
+ * 两条判据，与静态侧 `readability.ts` 的 `isCollapsed` 逐条对应 —— 两边必须
+ * 同一口径，否则会出现「静态说折叠、浏览器说展开了」的自相矛盾：
+ *
+ *  1. 容器自己的 class 带 `collaps`（知乎的 `RichContent-inner is-collapsed`）
+ *  2. 容器里还留着一个文案是「展开阅读全文」的按钮（展开后它会变成「收起」）
+ *
+ * 判**容器自己**而不是整页：问题页上有十几个回答，我们只点得动前二十个，
+ * 页面别处必然还留着折叠容器，按整页判会把已经拿到的正文一起否掉。
+ *
+ * 仍然折叠时调用方应当**跳过**这段 innerText —— 它是两三百字的预览，却会因为
+ * 超过 200 字的门槛被当成「拿到了正文」，正是静态侧那个坑在浏览器侧的重演。
+ */
+async function containerCollapsed(el: ElementHandle): Promise<boolean> {
+  const cls = (await el.getAttribute("class").catch(() => null)) ?? "";
+  if (/collaps/i.test(cls)) return true;
+
+  const btns = await el.$$("button, a").catch(() => []);
+  for (const b of btns) {
+    const text = (await b.innerText().catch(() => "")).trim();
+    if (ZHIHU_EXPAND_TEXT.test(text)) return true;
+  }
+  return false;
+}
 
 export async function fetchWithBrowser(
   url: string,
@@ -171,6 +268,25 @@ export async function fetchWithBrowser(
       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     locale: "zh-CN",
     viewport: { width: 1440, height: 900 },
+  });
+
+  /*
+    反自动化特征抹除（2026-10-14 实测补上，修的就是「知乎登录了却只抓到摘要」）。
+
+    实测：用已登录的 zhihu cookie 直接 page.goto 专栏文章，拿到的是一段风控页
+    （`{"error":{"code":40362,"message":"您当前请求存在异常..."}}`）—— 知乎的
+    zse-ck 风控校验 `navigator.webdriver`，而 Playwright 默认把它暴露成 true。
+
+    起 chromium 时的 `--disable-blink-features=AutomationControlled` 只挡住了
+    Blink 层的自动化标记，**不覆盖** `navigator.webdriver` 这个 JS 属性，两者缺一
+    不可。加上这段 initScript 之后，同一篇专栏、同样的 cookie 立即拿到 11562 字
+    全文（此前只有搜索摘要几百字）。
+
+    这不是绕过任何签名或鉴权（知乎的 x-zse-93/96 一个字节都没碰），只是让一个
+    真实浏览器不主动申报「我是自动化脚本」。
+  */
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
   });
 
   /*
@@ -219,12 +335,17 @@ export async function fetchWithBrowser(
       // domcontentloaded 之后内容往往还在渲染，给个短暂的静默期
       await page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => {});
 
+      // 知乎的正文默认是折叠的，不点开就只能拿到两三百字的预览（见 expandZhihu）
+      if (/zhihu\.com/.test(url)) await expandZhihu(page);
+
       let selectorText: string | undefined;
       for (const { match, selectors } of SITE_SELECTORS) {
         if (!match.test(url)) continue;
         for (const sel of selectors) {
           const el = await page.$(sel);
           if (!el) continue;
+          // 点开之后仍折叠的容器，读到的只是预览 —— 那正是静态侧那个坑的重演
+          if (/zhihu\.com/.test(url) && (await containerCollapsed(el))) continue;
           const txt = (await el.innerText()).trim();
           if (txt.length > 200) {
             selectorText = txt;

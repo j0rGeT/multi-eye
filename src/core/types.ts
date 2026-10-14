@@ -16,6 +16,7 @@ export type SiteKey =
   | "v2ex"
   | "infoq"
   | "juejin"
+  | "wechat"
   | "xiaohongshu"
   | "youtube"
   | "x"

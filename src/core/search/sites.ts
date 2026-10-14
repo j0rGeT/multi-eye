@@ -177,6 +177,30 @@ export const SITE_TARGETS: Record<SiteKey, SiteTarget> = {
     color: "#1e80ff",
   },
   /*
+    微信公众号文章。与掘金同构：正文在公开页面上（`mp.weixin.qq.com/s/...`），
+    走「引擎链 + 域名过滤」，不写直连 provider —— 微信没有开放的文章搜索接口，
+    公众号会话列表接口需要登录态和签名，属于明令不碰的那一类。
+
+    domain 必须是 `mp.weixin.qq.com` 而不是 `weixin.qq.com`：`belongsToDomain`
+    按「恰好相等或多一级子域」判定，填 `weixin.qq.com` 会把
+    `weixin110.qq.com`（微信安全中心的诈骗/违规公告页，不是公众号文章）也
+    收进来，那一栏就脏了。
+
+    覆盖度的现实：SearXNG 这条链（本机默认是 bing）很可能一条都回不来 ——
+    bing 对 mp.weixin.qq.com 的收录很差，公众号文章基本只有 Google 索引得全。
+    这一栏在 SearXNG 下可能是空的，Serper（Google）才收得多；
+    那一栏空着是上游事实，不是 bug，不要为它放宽域名过滤。
+  */
+  wechat: {
+    key: "wechat",
+    label: "微信公众号",
+    shortLabel: "公众号",
+    domain: "mp.weixin.qq.com",
+    keyword: "公众号",
+    kind: "article",
+    color: "#07c160",
+  },
+  /*
     下面三个是「主题源」：各有自己的公开接口，一个主题查一次，不走引擎链。
 
     ── HN 的 domain 为什么是空串 ──
@@ -267,6 +291,7 @@ export const DEFAULT_SITES: SiteKey[] = [
   "v2ex",
   "infoq",
   "juejin",
+  "wechat",
   "bilibili",
   "youtube",
   "hackernews",

@@ -50,6 +50,7 @@ export interface StoredAccount {
  */
 const AUTH_SITES: Record<string, string> = {
   "zhihu.com": "zhihu",
+  "xiaohongshu.com": "xiaohongshu",
 };
 
 /** 这张表里的站点名，供界面与文档展示（顺序稳定，便于断言）。 */
