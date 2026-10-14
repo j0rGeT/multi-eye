@@ -55,6 +55,17 @@ export const SITE_LIMITATION_NOTES: Record<string, string> = {
   x: "站内内容不被搜索引擎索引，且未登录读不到正文。",
   bilibili: "未登录时部分接口返回 412 风控页；公开元数据接口（视频 / 专栏 / 图文）不受影响。",
   youtube: "观看页 HTML 里没有正文，只有字幕可用；出口 IP 被判定为机器人时会拿不到字幕。",
+  /**
+   * 2026-10-13 实测：对 `mp.weixin.qq.com/s?__biz=...` 文章 URL 发裸 HTTP 请求，
+   * 一部分直接被 302 到 `wappoc_appmsgcaptcha`（「环境异常，完成验证后即可继续
+   * 访问」的验证码页），另一部分返回的是没有 `js_content` 的壳页 —— 这两种
+   * 都抽不出正文，而且重试同参数不会变。已给该域名补 `Referer` 头缓解（见
+   * `fetch/http.ts`），但对被微信判为异常流量的出口 IP 无效。文章能不能抓到
+   * 还取决于该文是否被微信限制转发 —— 这是平台风控，不是抓取参数没调对。
+   */
+  wechat:
+    "微信公众号文章对非微信客户端流量有风控（「环境异常」验证码页），" +
+    "且搜索引擎对 mp.weixin.qq.com 收录稀疏；抓不到正文多半是平台拦截而非故障。",
 };
 
 /**
@@ -97,6 +108,16 @@ const ZHIHU_NOTE = {
     "在「知乎账号」里重新扫码即可。",
 } as const;
 
+const XIAOHONGSHU_NOTE = {
+  loggedOut:
+    "小红书网页端对未登录访问一律 302 重定向到风控登录页，无法抽取笔记正文。" +
+    "可以在搜索面板的「小红书账号」里用手机小红书 App 或微信扫码登录一次" +
+    "（cookie 只保存在本机 data/auth/，不入库、不上传）。",
+  loggedIn:
+    "已携带小红书登录凭证尝试渲染，但该笔记依然触发风控拦截 —— 多半是凭证过期，" +
+    "可在「小红书账号」里重新扫码更新登录态。",
+} as const;
+
 /**
  * 某个站点在这次调研里的限制说明；没有就返回 undefined。
  *
@@ -109,6 +130,7 @@ export function siteLimitationNote(
   ctx: LimitationContext = {},
 ): string | undefined {
   if (site === "zhihu") return ctx.loggedIn ? ZHIHU_NOTE.loggedIn : ZHIHU_NOTE.loggedOut;
+  if (site === "xiaohongshu") return ctx.loggedIn ? XIAOHONGSHU_NOTE.loggedIn : XIAOHONGSHU_NOTE.loggedOut;
   return SITE_LIMITATION_NOTES[site];
 }
 
@@ -138,8 +160,13 @@ export function knownLimitation(
     return `已知限制（不是故障）：HTTP 403 —— ${ZHIHU_NOTE[ctx.loggedIn ? "loggedIn" : "loggedOut"]}`;
   }
 
-  // 小红书 / X：风控页与 403 都是平台策略，不是抓取参数没调对。
-  if ((site === "xiaohongshu" || site === "x") && /HTTP 40[13]|HTTP 412|风控/.test(e)) {
+  // 小红书：带登录态与未登录态分别提示
+  if (site === "xiaohongshu" && /HTTP 40[13]|HTTP 412|风控|300031|300012/.test(e)) {
+    return `已知限制（不是故障）：${XIAOHONGSHU_NOTE[ctx.loggedIn ? "loggedIn" : "loggedOut"]}`;
+  }
+
+  // X：风控页与 403 都是平台策略，不是抓取参数没调对。
+  if (site === "x" && /HTTP 40[13]|HTTP 412|风控/.test(e)) {
     return `已知限制（不是故障）：${SITE_LIMITATION_NOTES[site]}`;
   }
 
@@ -147,6 +174,22 @@ export function knownLimitation(
   // 认定我们是异常流量。注意公开接口本身不需要登录，所以这只影响少数页面。
   if (site === "bilibili" && /HTTP 412|风控/.test(e)) {
     return `已知限制（不是故障）：HTTP 412 —— ${SITE_LIMITATION_NOTES.bilibili}`;
+  }
+
+  /*
+    微信文章页的两种风控特征。
+
+    2026-10-13 实测（见 `SITE_LIMITATION_NOTES.wechat`）：微信拦截的落点不是
+    HTTP 状态码 —— 它回 200，要么 302 到验证码页（`wappoc_appmsgcaptcha`，
+    页面里写着「环境异常，完成验证后即可继续访问」），要么给一个没有
+    `js_content` 的壳页。两个可识别的特征都落在**抓取层产出的错误文案**里：
+    「未能提取到正文」「已用无头浏览器渲染，仍没抽到正文」这类串是 Readability
+    / Playwright 两级都没救回来之后的兜底文案，在微信这个站点上它们对应的就是
+    风控页而不是真故障。特征串刻意收在这条兜底错误上（HTTP 失败另有 error），
+    避免把「微信临时连不上」也翻译掉。
+  */
+  if (site === "wechat" && /未能提取到正文|没抽到正文|无头浏览器渲染/.test(e)) {
+    return `已知限制（不是故障）：${SITE_LIMITATION_NOTES.wechat}`;
   }
 
   /*

@@ -44,6 +44,7 @@ function numParam(
  *   w          画布宽度，默认 1600
  *   seed       固定布局随机数，让同一会话每次生成同一张图
  *   docs=0     不画资料节点（节点多的时候图会糊）
+ *   style      色彩风格（default / dark / paper / contrast），默认 default
  *   download=1 带上 Content-Disposition，浏览器直接下载而不是在标签页里打开
  */
 export async function GET(req: NextRequest) {
@@ -77,10 +78,12 @@ export async function GET(req: NextRequest) {
 
   const width = numParam(params, "w", 1600, 400, 4000);
   const seed = numParam(params, "seed", 42);
+  const style = params.get("style") ?? undefined;
 
   const svg = renderTopologySvg(graph, {
     width,
     seed,
+    style,
     showDocuments: params.get("docs") !== "0",
     /*
       说清楚「抓了多少」和「有多少进了这张图」是两件事。

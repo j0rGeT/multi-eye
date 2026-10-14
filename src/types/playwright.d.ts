@@ -21,6 +21,10 @@ declare module "playwright" {
   export interface ElementHandle {
     innerText(): Promise<string>;
     getAttribute(name: string): Promise<string | null>;
+    /** 容器里还有没有「展开阅读全文」这类按钮 —— 判折叠要用。 */
+    $$(selector: string): Promise<ElementHandle[]>;
+    /** 展开按钮只能靠点。点不中（元素被遮挡/已消失）由调用方 `.catch(() => {})` 兜住。 */
+    click(options?: { timeout?: number }): Promise<void>;
   }
 
   export interface Page {
@@ -29,10 +33,13 @@ declare module "playwright" {
       options?: { waitUntil?: string; timeout?: number },
     ): Promise<unknown>;
     waitForLoadState(state: string, options?: { timeout?: number }): Promise<void>;
+    $$(selector: string): Promise<ElementHandle[]>;
     $(selector: string): Promise<ElementHandle | null>;
     content(): Promise<string>;
     url(): string;
     close(): Promise<void>;
+    /** 展开按钮点完之后，正文是异步写进 DOM 的，要等一下再读。 */
+    waitForTimeout(ms: number): Promise<void>;
   }
 
   /** 与 playwright 官方 `Cookie` 对齐的那几个字段（见 core/auth/cookies.ts）。 */
@@ -53,6 +60,8 @@ declare module "playwright" {
     newPage(): Promise<Page>;
     /** 把登录态灌进上下文（见 fetch/playwright.ts 里为什么不用改请求头那条路）。 */
     addCookies(cookies: readonly CookieParam[]): Promise<void>;
+    /** 注入在页面脚本前执行的初始化脚本（用于反爬特征抹除如 navigator.webdriver）。 */
+    addInitScript(script: string | Function | { path?: string; content?: string }): Promise<void>;
     /** 读当前上下文里的 cookie。扫码登录靠它判「用户扫完了没有」。 */
     cookies(urls?: string | readonly string[]): Promise<CookieParam[]>;
     /** 已经打开的页面。扫码时知乎自己会跳转，要拿到的就是那个页面。 */

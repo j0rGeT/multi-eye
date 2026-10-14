@@ -260,3 +260,106 @@ export function buildTrendData(
 
   return { years, series, unknownDocs };
 }
+
+/**
+ * 拓扑图年份分层统计维度指标（每年一个统计维度）。
+ * 满足纪律：按年份分层，最大 10 年，每年一个统计维度。
+ */
+export interface YearDimensionStat {
+  /** 统计年份标识：如 "2026" 或 "早于 2017" */
+  key: string;
+  year?: number;
+  isBaseline: boolean;
+  /** 该年份层包含的节点总数（概念 + 资料） */
+  nodeCount: number;
+  /** 该年份层概念节点数量 */
+  conceptCount: number;
+  /** 该年份层文档资料数量 */
+  documentCount: number;
+  /** 该年份出现的核心代表概念词（权重前 3 个） */
+  topConcepts: string[];
+}
+
+/**
+ * 将图中涉及的年份按“最大 10 年”进行收敛聚类，并计算每年统计维度的元数据。
+ * 超出最近 10 年的历史年份归入基准层（"早于 <最早年份>"），确保分层不过度分散。
+ */
+export function buildYearDimensions(nodes: GraphNode[]): YearDimensionStat[] {
+  const yearsSet = new Set<number>();
+  for (const n of nodes) {
+    if (n.publishedYear !== undefined) {
+      yearsSet.add(n.publishedYear);
+    }
+  }
+
+  if (yearsSet.size === 0) return [];
+
+  // 按年份降序排：最新的在最前
+  const sortedDesc = [...yearsSet].sort((a, b) => b - a);
+  // 最大保留 10 年
+  const top10Years = sortedDesc.slice(0, 10);
+  const cutoffYear = top10Years[top10Years.length - 1];
+  const hasOlder = sortedDesc.length > 10;
+
+  const statsMap = new Map<string, YearDimensionStat>();
+
+  for (const yr of top10Years) {
+    statsMap.set(String(yr), {
+      key: String(yr),
+      year: yr,
+      isBaseline: false,
+      nodeCount: 0,
+      conceptCount: 0,
+      documentCount: 0,
+      topConcepts: [],
+    });
+  }
+
+  const baselineKey = `早于 ${cutoffYear}`;
+  if (hasOlder) {
+    statsMap.set(baselineKey, {
+      key: baselineKey,
+      year: undefined,
+      isBaseline: true,
+      nodeCount: 0,
+      conceptCount: 0,
+      documentCount: 0,
+      topConcepts: [],
+    });
+  }
+
+  // 节点分桶并收集核心概念
+  const conceptsPerKey = new Map<string, { label: string; weight: number }[]>();
+
+  for (const n of nodes) {
+    if (n.publishedYear === undefined) continue;
+    const key =
+      n.publishedYear < cutoffYear && hasOlder
+        ? baselineKey
+        : statsMap.has(String(n.publishedYear))
+          ? String(n.publishedYear)
+          : baselineKey;
+
+    const stat = statsMap.get(key);
+    if (!stat) continue;
+    stat.nodeCount++;
+    if (n.kind === "document") {
+      stat.documentCount++;
+    } else {
+      stat.conceptCount++;
+      const list = conceptsPerKey.get(key) ?? [];
+      list.push({ label: n.label, weight: n.weight });
+      conceptsPerKey.set(key, list);
+    }
+  }
+
+  // 提取各年份权重最高的前 3 个概念词
+  for (const [key, stat] of statsMap.entries()) {
+    const list = conceptsPerKey.get(key) ?? [];
+    list.sort((a, b) => b.weight - a.weight);
+    stat.topConcepts = list.slice(0, 3).map((item) => item.label);
+  }
+
+  return [...statsMap.values()];
+}
+

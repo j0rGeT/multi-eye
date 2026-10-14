@@ -24,8 +24,13 @@
 import cytoscape from "cytoscape";
 import fcose from "cytoscape-fcose";
 import type { GraphModel } from "../types";
-import { clusterColor, clusterIndexMap } from "../graph/palette";
-import { edgeWidth, nodeSize } from "../graph/geometry";
+import {
+  clusterIndexMap,
+  getGraphTheme,
+  resolveGraphStyle,
+  type GraphStyleKey,
+} from "../graph/palette";
+import { edgeWidth, isCoreNode, nodeSize } from "../graph/geometry";
 
 let registered = false;
 function ensureFcose() {
@@ -48,11 +53,13 @@ export interface SvgOptions {
   showDocuments?: boolean;
   /** 图下方的出处说明，比如「来自会话 xxxxx · 主题 露营装备」。 */
   caption?: string;
+  /**
+   * 拓扑图色彩风格。
+   * 默认为 "default"，输出与原有配色完全一致；
+   * 支持 "dark" / "paper" / "contrast"。
+   */
+  style?: GraphStyleKey | string;
 }
-
-const DOC_COLOR = "#484f58";
-const DOC_BORDER = "#6e7681";
-const EDGE_COLOR = "#30363d";
 
 /**
  * 用给定的种子替换 Math.random，跑完再换回去。
@@ -103,8 +110,11 @@ export function renderTopologySvg(
     (e) => visible.has(e.source) && visible.has(e.target),
   );
 
+  const styleKey = resolveGraphStyle(opts.style);
+  const theme = getGraphTheme(styleKey);
+
   if (nodes.length === 0) {
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="80"><rect width="${width}" height="80" fill="#0d1117"/><text x="24" y="46" fill="#6e7681" font-family="sans-serif" font-size="14">这张图是空的</text></svg>`;
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="80"><rect width="${width}" height="80" fill="${theme.canvasBg}"/><text x="24" y="46" fill="${theme.captionColor}" font-family="sans-serif" font-size="14">这张图是空的</text></svg>`;
   }
 
   const maxWeight = Math.max(1, ...nodes.map((n) => n.weight));
@@ -224,7 +234,12 @@ export function renderTopologySvg(
   // ── 标签：只标权重靠前的那些 ──
   //
   // 1600px 宽塞 60 个标签就是一片糊。按权重取前 40%，剩下的靠颜色和大小读。
-  const sorted = [...nodes].sort((a, b) => b.weight - a.weight);
+  //
+  // 只在概念里排名：资料节点本来就不画标签，让它们占掉名额的话，带资料的
+  // 图会比不带资料的少标十几个概念（实测 66 节点的图只剩 7 个概念有名字）。
+  const sorted = [...nodes]
+    .filter((n) => n.kind !== "document")
+    .sort((a, b) => b.weight - a.weight);
   const labelCount = Math.max(
     8,
     Math.round(nodes.length * (nodes.length > 40 ? 0.35 : 0.6)),
@@ -239,16 +254,16 @@ export function renderTopologySvg(
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', sans-serif">`,
   );
   parts.push(
-    `<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#8b949e"/></marker></defs>`,
+    `<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="${theme.edgeRelationColor}"/></marker></defs>`,
   );
-  parts.push(`<rect width="${width}" height="${height}" fill="#0d1117"/>`);
+  parts.push(`<rect width="${width}" height="${height}" fill="${theme.canvasBg}"/>`);
 
   // 标题
   parts.push(
-    `<text x="${sideMargin}" y="${titleY}" fill="#e6edf3" font-size="21" font-weight="600">${esc(graph.topic.query)} · 知识拓扑</text>`,
+    `<text x="${sideMargin}" y="${titleY}" fill="${theme.textPrimary}" font-size="21" font-weight="600">${esc(graph.topic.query)} · 知识拓扑</text>`,
   );
   parts.push(
-    `<text x="${sideMargin}" y="${subtitleY}" fill="#8b949e" font-size="13">${graph.stats.nodeCount} 节点 · ${graph.stats.edgeCount} 边 · ${graph.stats.clusterCount} 簇 · ${
+    `<text x="${sideMargin}" y="${subtitleY}" fill="${theme.textSecondary}" font-size="13">${graph.stats.nodeCount} 节点 · ${graph.stats.edgeCount} 边 · ${graph.stats.clusterCount} 簇 · ${
       graph.stats.generatedBy === "llm" ? "LLM 语义构图" : "本地启发式构图"
     }（jieba + TF-IDF + 共现 + Louvain）</text>`,
   );
@@ -263,15 +278,15 @@ export function renderTopologySvg(
     const chipW = 14 + label.length * 12 + 14;
     if (legendX + chipW > width - sideMargin) break;
     parts.push(
-      `<rect x="${legendX}" y="${legendY - 9}" width="9" height="9" rx="2" fill="${clusterColor(i)}"/>`,
-      `<text x="${legendX + 14}" y="${legendY}" fill="#8b949e" font-size="12">${esc(label)}</text>`,
+      `<rect x="${legendX}" y="${legendY - 9}" width="9" height="9" rx="2" fill="${theme.getClusterColor(i)}"/>`,
+      `<text x="${legendX + 14}" y="${legendY}" fill="${theme.textSecondary}" font-size="12">${esc(label)}</text>`,
     );
     legendX += chipW;
     legendShown += 1;
   }
   if (legendShown < graph.clusters.length) {
     parts.push(
-      `<text x="${legendX}" y="${legendY}" fill="#6e7681" font-size="12">+${graph.clusters.length - legendShown} 个簇</text>`,
+      `<text x="${legendX}" y="${legendY}" fill="${theme.captionColor}" font-size="12">+${graph.clusters.length - legendShown} 个簇</text>`,
     );
   }
 
@@ -313,14 +328,29 @@ export function renderTopologySvg(
     const w = edgeWidth(e.weight, maxEdge);
     const relation = e.kind === "relation";
 
+    const strokeColor = relation
+      ? theme.edgeRelationColor
+      : e.kind === "contains"
+        ? theme.svgEdgeContainsColor
+        : theme.edgeColor;
+    const strokeOpacity = relation
+      ? theme.edgeRelationOpacity
+      : e.kind === "contains"
+        ? theme.svgEdgeContainsOpacity
+        : theme.edgeOpacity;
+    const dashAttr =
+      e.kind === "contains"
+        ? ' stroke-dasharray="2 3"'
+        : !relation && theme.edgeLineStyle === "dashed"
+          ? ' stroke-dasharray="6 4"'
+          : "";
+
     parts.push(
       `<line x1="${(x1 + ux * ra).toFixed(1)}" y1="${(y1 + uy * ra).toFixed(1)}" x2="${(x2 - ux * rb).toFixed(1)}" y2="${(y2 - uy * rb).toFixed(1)}" stroke="${
-        relation ? "#8b949e" : EDGE_COLOR
+        strokeColor
       }" stroke-width="${(w * scale).toFixed(2)}" stroke-opacity="${
-        relation ? 0.85 : e.kind === "contains" ? 0.35 : 0.55
-      }"${relation ? ' marker-end="url(#arrow)"' : ""}${
-        e.kind === "contains" ? ' stroke-dasharray="2 3"' : ""
-      }/>`,
+        strokeOpacity
+      }"${relation ? ' marker-end="url(#arrow)"' : ""}${dashAttr}/>`,
     );
   }
 
@@ -330,37 +360,61 @@ export function renderTopologySvg(
     if (!p) continue;
     const cx = px(p.x);
     const cyy = py(p.y);
-    const r = radiusOf(n) * scale;
+    const rawR = radiusOf(n);
+    const r = rawR * scale;
+    const isCore = isCoreNode(rawR * 2, n.kind);
     const color =
       n.kind === "document"
-        ? DOC_COLOR
-        : clusterColor(clusterIndex.get(n.clusterId) ?? 0);
-    const stroke = n.kind === "document" ? DOC_BORDER : "#0d1117";
+        ? theme.docFill
+        : theme.getClusterColor(clusterIndex.get(n.clusterId) ?? 0);
+    const stroke = n.kind === "document" ? theme.docBorder : theme.conceptBorder;
+    const strokeW =
+      n.kind === "document"
+        ? (theme.docBorderWidth * scale).toFixed(2)
+        : (theme.conceptBorderWidth * scale).toFixed(2);
+    const fillOpacity =
+      n.kind === "document" ? theme.docFillOpacity : theme.conceptFillOpacity;
+
+    // 核心节点环境发光光晕 (Underlay Glow)
+    if (isCore && theme.ambientGlowOpacity > 0) {
+      const glowR = r + theme.ambientGlowPadding * scale;
+      parts.push(
+        `<circle cx="${cx.toFixed(1)}" cy="${cyy.toFixed(1)}" r="${glowR.toFixed(1)}" fill="${color}" fill-opacity="${theme.ambientGlowOpacity.toFixed(2)}"/>`,
+      );
+    }
 
     if (n.kind === "document") {
-      const side = r * 2;
+      const docR = (theme.docDimensions.width / 2) * scale;
       parts.push(
-        `<rect x="${(cx - r).toFixed(1)}" y="${(cyy - r).toFixed(1)}" width="${side.toFixed(1)}" height="${side.toFixed(1)}" rx="2" fill="${color}" fill-opacity="0.5" stroke="${stroke}"/>`,
+        `<circle cx="${cx.toFixed(1)}" cy="${cyy.toFixed(1)}" r="${docR.toFixed(1)}" fill="${color}" fill-opacity="${fillOpacity}" stroke="${stroke}" stroke-width="${strokeW}"/>`,
       );
     } else {
       parts.push(
-        `<circle cx="${cx.toFixed(1)}" cy="${cyy.toFixed(1)}" r="${r.toFixed(1)}" fill="${color}" fill-opacity="0.85" stroke="${stroke}"/>`,
+        `<circle cx="${cx.toFixed(1)}" cy="${cyy.toFixed(1)}" r="${r.toFixed(1)}" fill="${color}" fill-opacity="${fillOpacity}" stroke="${stroke}" stroke-width="${strokeW}"/>`,
       );
     }
 
     if (labelled.has(n.id) && n.kind !== "document") {
-      // 字号跟着一起缩放，但夹住上下限：太小看不清、太大喧宾夺主
-      const fs = Math.max(10, Math.min(26, 10 * scale));
-      parts.push(
-        `<text x="${cx.toFixed(1)}" y="${(cyy + r + fs * 0.95).toFixed(1)}" fill="#c9d1d9" font-size="${fs.toFixed(1)}" text-anchor="middle">${esc(n.label)}</text>`,
-      );
+      if (isCore) {
+        // 核心大节点：文字居中排版，加粗，无遮挡
+        const fs = Math.max(11, Math.min(28, 11 * scale));
+        parts.push(
+          `<text x="${cx.toFixed(1)}" y="${cyy.toFixed(1)}" fill="${theme.coreNodeLabelColor}" font-size="${fs.toFixed(1)}" font-weight="600" text-anchor="middle" dominant-baseline="central">${esc(n.label)}</text>`,
+        );
+      } else {
+        // 细分外挂节点：保留在底部，但增加 paint-order 背景描边防穿插
+        const fs = Math.max(10, Math.min(24, 10 * scale));
+        parts.push(
+          `<text x="${cx.toFixed(1)}" y="${(cyy + r + fs * 0.95).toFixed(1)}" fill="${theme.nodeLabelColor}" stroke="${theme.canvasBg}" stroke-width="${(2.5 * scale).toFixed(1)}" stroke-linejoin="round" paint-order="stroke fill" font-size="${fs.toFixed(1)}" font-weight="500" text-anchor="middle">${esc(n.label)}</text>`,
+        );
+      }
     }
   }
 
   // 出处
   if (opts.caption) {
     parts.push(
-      `<text x="${sideMargin}" y="${height - 18}" fill="#6e7681" font-size="12">${esc(opts.caption)}</text>`,
+      `<text x="${sideMargin}" y="${height - 18}" fill="${theme.captionColor}" font-size="12">${esc(opts.caption)}</text>`,
     );
   }
 

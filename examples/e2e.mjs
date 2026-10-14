@@ -942,6 +942,79 @@ try {
       lexicalRelevance(at("Camping Gear Guide", ""), cjkPlan).verdict === "uncertain",
       latinHead(cjkPlan) === null ? "没有拉丁词根 → uncertain" : `**latinHead 应为 null，实得 ${latinHead(cjkPlan)}**`,
     );
+
+    /*
+      体裁预筛：凡是招聘/JD/招标采购/二手，即便高频命中关键词，也一律判 unlikely。
+      来自真实用户反馈：搜 Mooncake kvcache，结果搜出小红书招聘。
+    */
+    const mooncakePlan = {
+      raw: "Mooncake kvcache 资料",
+      intent: "了解 Mooncake 的 KVCache 架构与技术实现",
+      entity: { name: "Mooncake", aliases: ["Mooncake KVCache"] },
+      disambiguators: ["KVCache"],
+      negatives: [],
+      variants: {},
+      source: "llm",
+    };
+    const offTopicCases = [
+      {
+        url: "https://job.xiaohongshu.com/campus/position/17017",
+        title: "【2026校招】KVCache/高性能存储开发工程师",
+        snippet: "负责 Mooncake 分布式 KVCache 系统的研发",
+        expected: "招聘",
+      },
+      {
+        url: "https://www.zhipin.com/job_detail/abc.html",
+        title: "Mooncake 架构师 (岗位职责与任职资格)",
+        snippet: "任职要求熟悉 KVCache 优化",
+        expected: "招聘",
+      },
+      {
+        url: "https://www.ccgp.gov.cn/cggg/dfgg/zbgg/2026/tender.html",
+        title: "某高校高性能计算平台集群采购项目招标公告",
+        snippet: "采购预算 500 万元",
+        expected: "招标采购",
+      },
+      {
+        url: "https://space.bilibili.com/12345678",
+        title: "技术Up主的小空间 - 哔哩哔哩视频空间",
+        snippet: "个人动态与投币列表",
+        expected: "用户个人主页",
+      },
+    ];
+    for (const c of offTopicCases) {
+      const v = lexicalRelevance({ id: "x", url: c.url, title: c.title, snippet: c.snippet }, mooncakePlan);
+      check(
+        "相关性",
+        `体裁预筛拦截「${c.expected}」：${c.title.slice(0, 18)}…`,
+        v.verdict === "unlikely" && v.reason.includes(c.expected),
+        `${v.verdict} · ${v.reason}`,
+      );
+    }
+
+    // 用户意图本身就在查招聘时，不应被体裁预筛误杀
+    const jobHuntingPlan = {
+      raw: "大厂校招招聘岗位",
+      intent: "了解各大厂校园招聘岗位与要求",
+      entity: { name: "校园招聘", aliases: ["校招"] },
+      disambiguators: ["招聘"],
+      negatives: [],
+      variants: {},
+      source: "llm",
+    };
+    const jobResult = {
+      id: "x",
+      url: "https://job.xiaohongshu.com/campus/position/17017",
+      title: "【2026校招】开发工程师",
+      snippet: "小红书校招岗位",
+    };
+    const allowed = lexicalRelevance(jobResult, jobHuntingPlan);
+    check(
+      "相关性",
+      "用户在查招聘时放行体裁预筛",
+      !allowed.reason.includes("不是调研资料"),
+      `${allowed.verdict} · ${allowed.reason}`,
+    );
   }
 
   // ── 6.8 打包不变量：相关性只降不升 ──────────────────────────

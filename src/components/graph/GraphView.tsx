@@ -37,6 +37,7 @@ import cytoscape, {
   type ElementDefinition,
   type EventObject,
   type NodeSingular,
+  type StylesheetStyle,
 } from "cytoscape";
 import fcose from "cytoscape-fcose";
 import type {
@@ -46,8 +47,15 @@ import type {
   GraphNode,
   SessionViewState,
 } from "@/core/types";
-import { clusterColor, clusterIndexMap } from "@/core/graph/palette";
-import { edgeWidth, nodeSize } from "@/core/graph/geometry";
+import {
+  clusterColor,
+  clusterIndexMap,
+  getGraphTheme,
+  type GraphStyleKey,
+  type GraphStyleTheme,
+} from "@/core/graph/palette";
+import { edgeWidth, isCoreNode, nodeSize } from "@/core/graph/geometry";
+import { buildYearDimensions, type YearDimensionStat } from "@/core/graph/timeline";
 import GraphLegend from "./GraphLegend";
 import GraphToolbar from "./GraphToolbar";
 import GraphTooltip, { type TooltipState } from "./GraphTooltip";
@@ -68,6 +76,197 @@ interface XY {
 /** 节点超过这个数量就降级布局质量并关掉动画 —— 力导向动画在这个量级只会变成卡顿。 */
 const LARGE_GRAPH = 400;
 
+/**
+ * 根据当前风格主题构建 Cytoscape 样式表。
+ * 所有色彩与描边、线型配置均来自 `palette.ts`，不在组件内硬编码色值。
+ */
+function buildCyStylesheet(theme: GraphStyleTheme): StylesheetStyle[] {
+  return [
+    {
+      selector: "node",
+      style: {
+        "background-color": "data(color)",
+        "background-opacity": theme.conceptFillOpacity,
+        "border-width": theme.conceptBorderWidth,
+        "border-color": theme.conceptBorder,
+        ...(theme.useDoubleBorder ? { "border-style": "double" } : {}),
+        label: "data(displayLabel)",
+        "font-size": 9,
+        "font-weight": 500,
+        color: theme.nodeLabelColor,
+        "text-valign": "bottom",
+        "text-margin-y": 4,
+        "text-max-width": "90px",
+        "text-wrap": "ellipsis",
+        /*
+          外挂小标签防裁切描边遮罩：给文字添加一层背景色的柔和描边，
+          阻断从节点下方穿插交叉的连接线切割文字笔画，极大提升文字可读性。
+        */
+        "text-outline-color": theme.canvasBg,
+        "text-outline-width": 2,
+        "text-outline-opacity": 0.95,
+        width: "data(size)",
+        height: "data(size)",
+        /*
+          包含 underlay-opacity / underlay-padding 的平滑过渡，
+          营造 Obsidian/Linear 式呼吸发光与悬停光晕。
+        */
+        "transition-property":
+          "opacity background-color border-color border-width underlay-opacity underlay-padding",
+        "transition-duration": 180,
+      },
+    },
+    {
+      /**
+       * 核心概念大节点 (Core Node, 直径 >= 32px)：
+       * 1. 文字居中置于圆心内部 (text-valign: center)，字重加粗 (600)，字号提升至 10.5px；
+       * 2. 消除空心大圆圈中空无物、底部挂小细字的生硬感；
+       * 3. 注入常态同色系环境光晕 (underlay-color: data(color))。
+       */
+      selector: "node.core-node",
+      style: {
+        "text-valign": "center",
+        "text-halign": "center",
+        "text-margin-y": 0,
+        "text-max-width": "data(size)",
+        "text-wrap": "ellipsis",
+        "font-size": 10.5,
+        "font-weight": 600,
+        color: theme.coreNodeLabelColor,
+        "text-outline-width": 0,
+        "underlay-color": "data(color)",
+        "underlay-shape": "ellipse",
+        "underlay-padding": theme.ambientGlowPadding,
+        "underlay-opacity": theme.ambientGlowOpacity,
+      },
+    },
+    {
+      /**
+       * 文档/资料节点：精致圆形微徽章 (Circle Token) 造型。
+       * 彻底抛弃方形/直角/矩形视觉，采用 14px 正圆双环设计，
+       * 外圈带发光描边、半透明磨砂质感，与整体拓扑球体美学完全统一。
+       */
+      selector: 'node[kind = "document"]',
+      style: {
+        shape: "ellipse",
+        width: theme.docDimensions.width,
+        height: theme.docDimensions.height,
+        "background-color": theme.docFill,
+        "background-opacity": theme.docFillOpacity,
+        "border-width": theme.docBorderWidth,
+        "border-color": theme.docBorder,
+        "text-valign": "bottom",
+        "text-margin-y": 3,
+        "font-size": 7,
+        "font-weight": 400,
+        color: theme.docLabelColor,
+        "text-outline-width": 1.5,
+        "text-outline-color": theme.canvasBg,
+        "text-outline-opacity": 0.9,
+      },
+    },
+    {
+      selector: "edge",
+      style: {
+        width: "data(width)",
+        "line-color": theme.edgeColor,
+        "line-style": theme.edgeLineStyle,
+        "curve-style": "bezier",
+        opacity: theme.edgeOpacity,
+        "transition-property": "opacity line-color width",
+        "transition-duration": 180,
+      },
+    },
+    {
+      selector: 'edge[kind = "contains"]',
+      style: {
+        "line-style": theme.edgeContainsLineStyle,
+        "line-color": theme.edgeContainsColor,
+        opacity: theme.edgeContainsOpacity,
+      },
+    },
+    /*
+      LLM 构图会给关系边一个谓词（例如「优化 / 支持」）。把谓词直接标在
+      线上，选中邻域时就能看出“这两个概念是什么关系”，而不用回到右栏逐条
+      对照边列表；启发式构图没有 relation 边，因此不会增加噪音。
+    */
+    {
+      selector: 'edge[kind = "relation"]',
+      style: {
+        "line-style": "solid",
+        "line-color": theme.edgeRelationColor,
+        opacity: theme.edgeRelationOpacity,
+        label: "data(label)",
+        "font-size": 8,
+        color: theme.relationLabelColor,
+        "text-background-color": theme.relationLabelBg,
+        "text-background-opacity": 0.85,
+        "text-background-padding": "2px",
+        "text-rotation": "autorotate",
+      },
+    },
+    // 选中的邻域（点击选中，或悬停时以悬停节点为中心）
+    {
+      selector: "node.highlighted",
+      style: {
+        "border-width": 2.5,
+        "border-color": theme.highlightBorder,
+        opacity: 1,
+        "underlay-color": "data(color)",
+        "underlay-shape": "ellipse",
+        "underlay-padding": theme.activeGlowPadding,
+        "underlay-opacity": theme.activeGlowOpacity * 0.75,
+      },
+    },
+    {
+      selector: "edge.highlighted",
+      style: {
+        "line-color": theme.hoverEdgeColor,
+        opacity: 0.95,
+        width: "mapData(width, 1, 6, 2, 4.5)",
+      },
+    },
+    { selector: ".dimmed", style: { opacity: 0.15 } },
+    /*
+      悬停压暗比选中更轻（0.35 vs 0.15）：悬停是探索，选中是聚焦。
+      两者一样重的话，鼠标随便划过就会把图压得跟真选中了一样。
+    */
+    { selector: ".hover-dimmed", style: { opacity: 0.35 } },
+    {
+      selector: "node.hovered",
+      style: {
+        "border-width": 2.5,
+        "border-color": theme.highlightBorder,
+        "underlay-color": "data(color)",
+        "underlay-shape": "ellipse",
+        "underlay-padding": theme.activeGlowPadding,
+        "underlay-opacity": theme.activeGlowOpacity,
+      },
+    },
+    {
+      selector: "edge.hovered",
+      style: {
+        "line-color": theme.hoverEdgeColor,
+        opacity: 0.95,
+        width: "mapData(width, 1, 6, 2, 4.5)",
+      },
+    },
+    // 框选出来的节点（Cytoscape 内建的 :selected）—— 和点击选中的邻域高亮区分开
+    {
+      selector: "node:selected",
+      style: {
+        "border-width": 3,
+        "border-color": theme.selectedBorder,
+        "border-opacity": 1,
+        "underlay-color": theme.selectedBorder,
+        "underlay-shape": "ellipse",
+        "underlay-padding": theme.activeGlowPadding,
+        "underlay-opacity": 0.45,
+      },
+    },
+  ];
+}
+
 export interface GraphViewProps {
   graph: GraphModel;
   /** 当前选中的节点 id，用于高亮。 */
@@ -75,6 +274,10 @@ export interface GraphViewProps {
   onSelect: (node: GraphNode | null) => void;
   /** 只显示关键词（隐藏文档节点）——文档多的时候图会很挤。 */
   showDocuments: boolean;
+  /** 拓扑图色彩风格 */
+  graphStyle?: GraphStyleKey;
+  /** 切换拓扑图色彩风格 */
+  onStyleChange?: (style: GraphStyleKey) => void;
   /** 上次离开时的布局：节点位置与锁定集合。只在挂载时读一次。 */
   initialView?: SessionViewState;
   /** 位置变化后回调（已 debounce）。保存失败由调用方静默处理。 */
@@ -83,6 +286,10 @@ export interface GraphViewProps {
   documents?: Document[];
   /** 双击文档节点时打开预览。 */
   onOpenDocument?: (doc: Document) => void;
+  /** 拓扑空间维度："2d" | "3d" */
+  dimensionMode?: "2d" | "3d";
+  /** 切换 2D / 3D 维度模式 */
+  onToggleDimension?: () => void;
 }
 
 export default function GraphView({
@@ -90,10 +297,14 @@ export default function GraphView({
   selectedId,
   onSelect,
   showDocuments,
+  graphStyle = "default",
+  onStyleChange,
   initialView,
   onViewChange,
   documents,
   onOpenDocument,
+  dimensionMode = "2d",
+  onToggleDimension,
 }: GraphViewProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -133,6 +344,7 @@ export default function GraphView({
   const [fullscreen, setFullscreen] = useState(false);
   const [selectedCount, setSelectedCount] = useState(0);
   const [pinnedCount, setPinnedCount] = useState(0);
+  const [yearDimensions, setYearDimensions] = useState<YearDimensionStat[]>([]);
   const [layoutMode, setLayoutMode] = useState<"free" | "yearly">(
     initialView?.layoutMode ?? "free",
   );
@@ -143,6 +355,9 @@ export default function GraphView({
   layoutModeRef.current = layoutMode;
   const showTimelineRef = useRef<boolean>(showTimeline);
   showTimelineRef.current = showTimeline;
+  const graphStyleRef = useRef<GraphStyleKey>(graphStyle);
+  graphStyleRef.current = graphStyle;
+  const theme = useMemo(() => getGraphTheme(graphStyle), [graphStyle]);
 
   const clusterLabelById = useMemo(() => {
     const m = new Map<string, string>();
@@ -169,6 +384,8 @@ export default function GraphView({
 
     const nodes: ElementDefinition[] = visibleNodes.map((n) => {
       const yearLabel = n.publishedYear ? ` [${n.publishedYear}${n.isYearInferred ? "*" : ""}]` : "";
+      const size = nodeSize(n.weight, maxWeight, n.kind);
+      const isCore = isCoreNode(size, n.kind);
       return {
         data: {
           id: n.id,
@@ -180,9 +397,13 @@ export default function GraphView({
           weight: n.weight,
           degree: n.degree,
           clusterId: n.clusterId,
-          color: clusterColor(clusterIndex.get(n.clusterId) ?? 0),
-          size: nodeSize(n.weight, maxWeight, n.kind),
+          color: clusterColor(clusterIndex.get(n.clusterId) ?? 0, graphStyle),
+          size,
         },
+        classes: [
+          n.kind === "document" ? "document-node" : "concept-node",
+          isCore ? "core-node" : "leaf-node",
+        ].join(" "),
       };
     });
 
@@ -203,7 +424,7 @@ export default function GraphView({
       }));
 
     return { nodeDefs: nodes, edgeDefs: edges };
-  }, [graph, showDocuments, layoutMode]);
+  }, [graph, showDocuments, layoutMode, graphStyle]);
 
   // ── 位置持久化（debounce）──
   const saveTimer = useRef<number | null>(null);
@@ -260,112 +481,7 @@ export default function GraphView({
       // 平移与框选在 Cytoscape 里可以共存：开着平移时框选需要按 Shift。
       // 「框选模式」按钮做的是把平移关掉，让拖拽直接就是框选。
       boxSelectionEnabled: true,
-      style: [
-        {
-          selector: "node",
-          style: {
-            "background-color": "data(color)",
-            "background-opacity": 0.85,
-            "border-width": 1,
-            "border-color": "#0d1117",
-            label: "data(displayLabel)",
-            "font-size": 9,
-            color: "#c9d1d9",
-            "text-valign": "bottom",
-            "text-margin-y": 3,
-            "text-max-width": "90px",
-            "text-wrap": "ellipsis",
-            width: "data(size)",
-            height: "data(size)",
-            /*
-              没有这些 transition，选中和压暗都是硬切，整张图会显得很生硬。
-              180ms 是刻意的：再长就跟不上鼠标，再短就看不出是过渡。
-            */
-            "transition-property": "opacity background-color border-color border-width",
-            "transition-duration": 180,
-          },
-        },
-        {
-          /**
-           * 文档节点：方形 + 中性灰，不跟随簇配色。
-           *
-           * 本来按所属簇上色，但那会传达一个错误信息：这份语料的 60 个概念里
-           * 40 个落在同一个簇，于是 43 篇资料里 38 篇被判给它 —— 几乎所有资料
-           * 节点同色，看着像配色坏了。实际上「资料属于某个簇」这个设定本身
-           * 就不成立：资料的归属是「跟哪个方向更相关」，那是个连续量。
-           *
-           * 形状走选择器而不是 data 映射：Cytoscape 的 shape 不支持 mapper，
-           * 写 shape: "data(shape)" 会被静默忽略，所有节点都变回圆形。
-           */
-          selector: 'node[kind = "document"]',
-          style: {
-            shape: "round-rectangle",
-            "background-color": "#484f58",
-            "background-opacity": 0.5,
-            "border-color": "#6e7681",
-            "font-size": 7,
-            color: "#8b949e",
-          },
-        },
-        {
-          selector: "edge",
-          style: {
-            width: "data(width)",
-            "line-color": "#30363d",
-            "curve-style": "bezier",
-            opacity: 0.55,
-            "transition-property": "opacity line-color width",
-            "transition-duration": 180,
-          },
-        },
-        {
-          selector: 'edge[kind = "contains"]',
-          style: {
-            "line-style": "dotted",
-            "line-color": "#21262d",
-            opacity: 0.4,
-          },
-        },
-        /*
-          LLM 构图会给关系边一个谓词（例如「优化 / 支持」）。把谓词直接标在
-          线上，选中邻域时就能看出“这两个概念是什么关系”，而不用回到右栏逐条
-          对照边列表；启发式构图没有 relation 边，因此不会增加噪音。
-        */
-        {
-          selector: 'edge[kind = "relation"]',
-          style: {
-            label: "data(label)",
-            "font-size": 8,
-            color: "#8b949e",
-            "text-background-color": "#0d1117",
-            "text-background-opacity": 0.85,
-            "text-background-padding": "2px",
-            "text-rotation": "autorotate",
-          },
-        },
-        // 选中的邻域（点击选中，或悬停时以悬停节点为中心）
-        {
-          selector: ".highlighted",
-          style: { "border-width": 3, "border-color": "#e6edf3", opacity: 1 },
-        },
-        { selector: ".dimmed", style: { opacity: 0.15 } },
-        /*
-          悬停压暗比选中更轻（0.35 vs 0.15）：悬停是探索，选中是聚焦。
-          两者一样重的话，鼠标随便划过就会把图压得跟真选中了一样。
-        */
-        { selector: ".hover-dimmed", style: { opacity: 0.35 } },
-        { selector: "node.hovered", style: { "border-width": 2, "border-color": "#e6edf3" } },
-        { selector: "edge.hovered", style: { "line-color": "#8b949e", opacity: 0.9 } },
-        // 框选出来的节点（Cytoscape 内建的 :selected）—— 和点击选中的邻域高亮区分开
-        {
-          selector: "node:selected",
-          style: {
-            "border-width": 3,
-            "border-color": "#58a6ff",
-            "border-opacity": 1,
-          },
-        },
-      ],
+      style: buildCyStylesheet(getGraphTheme(graphStyleRef.current)),
       layout: { name: "preset" },
     });
 
@@ -585,6 +701,12 @@ export default function GraphView({
       if (p) n.position(p);
     });
 
+    if (layoutModeRef.current === "yearly") {
+      setYearDimensions(buildYearDimensions(graph.nodes));
+    } else {
+      setYearDimensions([]);
+    }
+
     runLayout(
       cy,
       fittedRef.current ? "keep" : "initial",
@@ -603,6 +725,13 @@ export default function GraphView({
       });
     }
   }, [nodeDefs, edgeDefs, graph]);
+
+  // ── 风格变化：原地更新样式表，不重跑布局 ──
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    cy.style(buildCyStylesheet(theme));
+  }, [theme]);
 
   // ── 选中态高亮 ──
   useEffect(() => {
@@ -627,6 +756,11 @@ export default function GraphView({
     const nextMode = layoutModeRef.current === "yearly" ? "free" : "yearly";
     setLayoutMode(nextMode);
     layoutModeRef.current = nextMode;
+    if (nextMode === "yearly") {
+      setYearDimensions(buildYearDimensions(graphRef.current.nodes));
+    } else {
+      setYearDimensions([]);
+    }
     scheduleSaveRef.current();
     runLayout(cy, "full", positionsRef.current, pinnedRef.current, graphRef.current, nextMode);
   }, []);
@@ -720,7 +854,8 @@ export default function GraphView({
         y: cy.height() / 2 - (frame.y1 + fh / 2) * z,
       });
 
-      const url = cy.png({ scale: 2, bg: "#0d1117" });
+      const currentTheme = getGraphTheme(graphStyleRef.current);
+      const url = cy.png({ scale: 2, bg: currentTheme.canvasBg });
       const a = document.createElement("a");
       a.href = url;
       a.download = `${graphRef.current.topic.query || "topology"}-拓扑.png`;
@@ -780,6 +915,8 @@ export default function GraphView({
         width: "100%",
         height: "100%",
         position: "relative",
+        background: theme.canvasBg,
+        transition: "background 0.18s",
       }}
     >
       <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
@@ -800,6 +937,10 @@ export default function GraphView({
           layoutMode={layoutMode}
           onToggleTimeline={handleToggleTimeline}
           showTimeline={showTimeline}
+          dimensionMode={dimensionMode}
+          onToggleDimension={onToggleDimension}
+          graphStyle={graphStyle}
+          onStyleChange={onStyleChange}
           boxSelect={boxSelect}
           selectedCount={selectedCount}
           pinnedCount={pinnedCount}
@@ -808,7 +949,85 @@ export default function GraphView({
 
         <GraphTooltip state={tooltip} />
 
-        <GraphLegend clusters={graph.clusters} onFocus={handleFocusCluster} />
+        <GraphLegend
+          clusters={graph.clusters}
+          onFocus={handleFocusCluster}
+          graphStyle={graphStyle}
+        />
+
+        {layoutMode === "yearly" && yearDimensions.length > 0 && (
+          <div
+            style={{
+              position: "absolute",
+              left: 12,
+              top: 54,
+              zIndex: 3,
+              display: "flex",
+              flexDirection: "column",
+              gap: 5,
+              maxWidth: 240,
+              maxHeight: "calc(100% - 110px)",
+              overflowY: "auto",
+              padding: "8px 10px",
+              background: "rgba(13, 17, 23, 0.88)",
+              border: "1px solid var(--border-subtle)",
+              borderRadius: 6,
+              backdropFilter: "blur(6px)",
+              fontSize: 11,
+              pointerEvents: "auto",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                fontWeight: 600,
+                color: "var(--fg)",
+                borderBottom: "1px solid var(--border-subtle)",
+                paddingBottom: 4,
+                marginBottom: 2,
+              }}
+            >
+              <span>年份分层维度 (最近10年)</span>
+              <span className="dim" style={{ fontSize: 10 }}>共 {yearDimensions.length} 个维度</span>
+            </div>
+            {yearDimensions.map((yd) => (
+              <div
+                key={yd.key}
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 2,
+                  padding: "3px 4px",
+                  borderRadius: 4,
+                  background: "rgba(255, 255, 255, 0.03)",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontWeight: 600, color: "var(--accent)" }}>{yd.key}</span>
+                  <span className="dim" style={{ fontSize: 10 }}>
+                    {yd.conceptCount} 概念 · {yd.documentCount} 资料
+                  </span>
+                </div>
+                {yd.topConcepts.length > 0 && (
+                  <div
+                    className="dim"
+                    style={{
+                      fontSize: 10,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                    title={yd.topConcepts.join("、")}
+                  >
+                    核心: {yd.topConcepts.join("、")}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
 
         {fullscreen && graph.clusters.length > 1 && (
           <div className="graph-fs-hint">按 Esc 退出全屏</div>
@@ -867,7 +1086,7 @@ function runLayout(
 ) {
   const large = cy.nodes().length > LARGE_GRAPH;
 
-  // ── 年份分层布局特殊处理 ──
+  // ── 年份分层布局特殊处理（最大 10 年，超出归入基准层）──
   if (yearlyMode === "yearly" && graphModel) {
     const nodeMap = new Map<string, GraphNode>(graphModel.nodes.map((n) => [n.id, n]));
     const yearsSet = new Set<number>();
@@ -877,9 +1096,15 @@ function runLayout(
     });
 
     const sortedYears = [...yearsSet].sort((a, b) => b - a); // 降序：最新的年份排在最上面
+    // 严格限制最大 10 年分层
+    const top10Years = sortedYears.slice(0, 10);
+    const cutoffYear = top10Years[top10Years.length - 1];
+    const hasOlder = sortedYears.length > 10;
+
     const yearBandMap = new Map<number, number>();
-    sortedYears.forEach((yr, idx) => yearBandMap.set(yr, idx));
-    const unknownBandIndex = sortedYears.length; // 无年份的排在最底层
+    top10Years.forEach((yr, idx) => yearBandMap.set(yr, idx));
+    const olderBandIndex = top10Years.length; // 早于 10 年的历史基准层
+    const unknownBandIndex = hasOlder ? olderBandIndex + 1 : olderBandIndex; // 无年份的排在最底层
 
     const BAND_HEIGHT = 220;
     const bandTargetY = new Map<string, number>();
@@ -888,7 +1113,17 @@ function runLayout(
     const bandNodes = new Map<number, string[]>();
     cy.nodes().forEach((n) => {
       const gn = nodeMap.get(n.id());
-      const bandIdx = gn?.publishedYear ? (yearBandMap.get(gn.publishedYear) ?? unknownBandIndex) : unknownBandIndex;
+      let bandIdx: number;
+      if (!gn?.publishedYear) {
+        bandIdx = unknownBandIndex;
+      } else if (yearBandMap.has(gn.publishedYear)) {
+        bandIdx = yearBandMap.get(gn.publishedYear)!;
+      } else if (hasOlder && gn.publishedYear < cutoffYear) {
+        bandIdx = olderBandIndex;
+      } else {
+        bandIdx = unknownBandIndex;
+      }
+
       const list = bandNodes.get(bandIdx) ?? [];
       list.push(n.id());
       bandNodes.set(bandIdx, list);

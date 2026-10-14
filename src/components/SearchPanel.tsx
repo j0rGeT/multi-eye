@@ -36,7 +36,7 @@ import { relevanceSummary } from "@/core/search/relevance";
 import { formatSignalValue, signalSummary } from "@/core/signals";
 import { methodLabel } from "./NodeDetail";
 import FeedPanel from "./FeedPanel";
-import ZhihuLogin from "./ZhihuLogin";
+import AccountLogin from "./AccountLogin";
 import IndustryPicker from "./IndustryPicker";
 import { industryClause } from "@/core/search/industries";
 import type { Document } from "@/core/types";
@@ -288,11 +288,27 @@ export default function SearchPanel(props: SearchPanelProps) {
         {sites.includes("rss") && <FeedPanel />}
 
         {/*
-          知乎登录态。和 FeedPanel 同一条理由：只有勾了知乎才显示。
-          它和别的源的区别是 —— 知乎 403 是唯一一类用户自己扫码就能消掉的
-          失败，所以值得摆在这里，而不是藏在设置页里。
+          登录态面板。和 FeedPanel 同一条理由：只有勾了那个源才显示。
+          它和别的源的区别是 —— 未登录导致的正文缺失是唯一一类用户自己
+          扫码就能消掉的失败，所以值得摆在这里，而不是藏在设置页里。
+          知乎与小红书同构，各占一个芯片。
         */}
-        {sites.includes("zhihu") && <ZhihuLogin />}
+        {sites.includes("zhihu") && (
+          <AccountLogin
+            site="zhihu"
+            title="知乎账号"
+            scanTarget="知乎 App"
+            why="知乎对未登录的访问一律返回 403，所以它的正文默认只能拿到搜索摘要。用你自己的账号扫码登录一次，抓取公开页面时就会带上你的登录态。这是可选的：不登录，其余功能完全不受影响。"
+          />
+        )}
+        {sites.includes("xiaohongshu") && (
+          <AccountLogin
+            site="xiaohongshu"
+            title="小红书账号"
+            scanTarget="小红书 App 或微信"
+            why="小红书网页端对未登录访问一律跳登录页，笔记正文抓不到，只剩搜索摘要。扫码登录一次，抓取公开笔记时就会带上你的登录态。这是可选的：不登录，其余功能完全不受影响。"
+          />
+        )}
 
         {/*
           时效与排序。放在搜索条件里而不是结果之上，是因为它们是**下一次搜索

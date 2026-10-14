@@ -132,6 +132,16 @@ export function extractWithReadability(
   if (selected) {
     const selectedText = cleanText(selected.textContent ?? "");
     if (selectedText.length >= THIN_THRESHOLD) {
+      /*
+        容器还在**折叠态**时，这段文字只是「展开阅读全文」之前露出的两三百字
+        预览 —— 它过得了 200 字的线，但远不是全文。此前这里直接返回
+        `thin: false`，于是降级链看它「抓到了」，无头浏览器那条路永远不会
+        被触发，用户拿到的就是摘要（实测根因）。
+
+        所以：容器照样用它（它是对的容器，换给通用 Readability 只会抓得更歪），
+        但把 `thin` 置回 true，把「要不要继续」交还给降级链。
+      */
+      const collapsed = isCollapsed(selected);
       return {
         title: doc.title?.trim() || selected.getAttribute("data-title") || "",
         text: selectedText,
@@ -141,7 +151,7 @@ export function extractWithReadability(
         byline: selectedAuthor(doc),
         publishedAt: metaDate,
         lang,
-        thin: false,
+        thin: collapsed,
       };
     }
   }
@@ -248,6 +258,49 @@ function extractSiteContainer(doc: Document, url: string): Element | null {
   }
 
   return bestLength >= THIN_THRESHOLD ? best : null;
+}
+
+/**
+ * 知乎的「展开阅读全文」按钮文案。
+ *
+ * 两处共用：静态侧用它判定容器是不是折叠态（`isCollapsed`），无头浏览器侧用它
+ * 挑出该点的按钮（`playwright.ts` 的 `expandZhihu`）。两边判据必须一致，否则
+ * 会出现「静态判定折叠、浏览器却找不到按钮可点」的空转。
+ */
+export const ZHIHU_EXPAND_TEXT =
+  /^(展开阅读全文|展开全文|展开更多|展开全部|查看全文|查看全部|展开)$/;
+
+/** 能把知乎正文从折叠态点开的按钮选择器（按命中率排序）。 */
+export const ZHIHU_EXPAND_SELECTORS = [
+  "button.ContentItem-more",
+  "button.RichContent-expandButton",
+  "button.Post-ExpandButton",
+  "button[class*='expand' i]",
+];
+
+/**
+ * 这段正文是不是还处于**折叠态**。
+ *
+ * 两条判据，任一命中即算折叠：
+ *
+ *  1. 自身或祖先的 class 里带 `collaps`（知乎的 `RichContent-inner is-collapsed`）
+ *  2. 子树里还留着一个文案是「展开阅读全文」的按钮 —— 展开之后它会变成「收起」，
+ *     所以按**文案**判而不是按「有没有按钮」判
+ *
+ * 只往上走 5 层：折叠态的标记就挂在正文容器和它的直接外壳上，再往上就进了
+ * 页面级容器，那里出现 `collaps` 会把整页误判成折叠。
+ *
+ * `extractSiteContainer` 只对 zhihu.com 返回非空，所以这里的入参一定是知乎节点。
+ */
+function isCollapsed(el: Element): boolean {
+  let cur: Element | null = el;
+  for (let depth = 0; cur && depth < 5; depth += 1, cur = cur.parentElement) {
+    if (/\bcollaps/i.test(cur.getAttribute("class") ?? "")) return true;
+  }
+  for (const btn of el.querySelectorAll("button, a")) {
+    if (ZHIHU_EXPAND_TEXT.test((btn.textContent ?? "").trim())) return true;
+  }
+  return false;
 }
 
 function selectedAuthor(doc: Document): string | undefined {

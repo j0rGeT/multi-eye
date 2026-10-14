@@ -120,6 +120,81 @@ export function bilibiliVideoId(url: string): BilibiliId | null {
 }
 
 /**
+ * 语言前缀：B 站国际站的 `/en/`、`/zh-Hans/`、`/pt-BR/` 这类首段。
+ */
+const LOCALE_SEGMENT = /^\/[a-z]{2}(?:-[a-z]{2,4})?(?=\/)/i;
+
+/**
+ * 这个 URL 是不是 B 站用户个人主页（如 space.bilibili.com/12345 或 /space/）。
+ * 用户原话：「B站也是搜索到的数据都是不太相关的用户信息」。用户空间主页是聚合展示流，
+ * 不存在单一资料内容，在相关性与抓取层必须前置拦截，避免把 UP 主页面当成资料。
+ */
+export function isBilibiliUserSpaceUrl(url: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return false;
+  }
+  const host = u.hostname.toLowerCase();
+  if (host === "space.bilibili.com" || host.endsWith(".space.bilibili.com")) return true;
+  if (/(^|\.)bilibili\.com$/.test(host)) {
+    return /^\/(space|member|dynamic)(\/|$)/i.test(u.pathname);
+  }
+  return false;
+}
+
+/**
+ * 把 B 站 URL 归一成 **yt-dlp 的 B 站解析器认得的形态**，交给媒体下载用。
+ *
+ * ── 为什么需要它 ──
+ *
+ * yt-dlp 的 B 站解析器只认 `bilibili.com/video/BV…`（见它的 `_VALID_URL`），
+ * 而搜索结果里真实出现过的形态还有两种：
+ *
+ *   - 带语言前缀：`/en/video/BV1keLp6GERQ/`、`/zh-Hans/video/BV…/`
+ *   - 合集页顺出来的：`/list/…?bvid=BV…`
+ *
+ * 这两种都到不了 B 站解析器，yt-dlp 会退回 generic 解析器、把整张网页当成
+ * 媒体流，最后被它自己的安全检查拦下：
+ *
+ *   yt-dlp 退出码 1：The extracted extension ('html') is unusual ...
+ *
+ * 实测（2026-10，同一个 `BV1keLp6GERQ`）：
+ *   /en/video/BV1keLp6GERQ/    → 只解析出 `0  html unknown`，下载即报上面那句
+ *   /video/BV1keLp6GERQ/       → 正常列出 100026/30080 等真实格式
+ *
+ * 有 id 就按 id 重建路径（顺带丢掉分享参数、语言前缀、合集页这些干扰）；
+ * 没有 id 只在「剥掉语言前缀之后落在已知内容路径上」时才剥，避免把某个
+ * 未来新增的一级路径段误当成语言。
+ */
+export function canonicalBilibiliUrl(url: string): string {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return url;
+  }
+  if (!/(^|\.)bilibili\.com$/.test(u.hostname)) return url;
+
+  const id = bilibiliVideoId(url);
+  if (id) {
+    const canonical = id.key === "bvid" ? `/video/${id.value}` : `/video/av${id.value}`;
+    // 已经是规范形态就原样返回：保留尾斜杠与已有参数，不做无谓的字符串改写
+    if (u.pathname === canonical || u.pathname === `${canonical}/`) return url;
+    u.pathname = `${canonical}/`;
+    return u.toString();
+  }
+
+  const stripped = u.pathname.replace(LOCALE_SEGMENT, "");
+  if (stripped !== u.pathname && /^\/(video|bangumi|read|opus|festival)\//.test(stripped)) {
+    u.pathname = stripped;
+    return u.toString();
+  }
+  return url;
+}
+
+/**
  * 这个 URL 是不是**B 站上抓不到正文、又没有可救的视频 id**的页面。
  *
  * ── 为什么需要它 ──
@@ -143,6 +218,7 @@ export function bilibiliVideoId(url: string): BilibiliId | null {
  * 两层都留着：这一层省掉一次注定失败的请求，那一层挡住其它站点的同类污染。
  */
 export function isBilibiliNonContentUrl(url: string): boolean {
+  if (isBilibiliUserSpaceUrl(url)) return true;
   let u: URL;
   try {
     u = new URL(url);

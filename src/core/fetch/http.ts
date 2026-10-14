@@ -60,6 +60,24 @@ export async function fetchHtml(
     // 只有 `core/auth/cookies.ts` 那张表里的站点、且用户真的登录过，才有值
     const cookie = await cookieHeaderFor(url);
 
+    /**
+     * 微信公众号文章页对「无 Referer 的裸请求」实测更严格：
+     * 2026-10-13 实测 `mp.weixin.qq.com/s?__biz=...` 文章 URL，不带 Referer
+     * 或带 Referer 都可能被 302 到 `wappoc_appmsgcaptcha`（「环境异常，完成验证
+     * 后即可继续访问」的验证码页），这是微信对非微信客户端流量的风控；
+     * 补 `Referer: https://mp.weixin.qq.com/` 是公开资料里缓解率最高的头，
+     * 仿照 `fetchBinary` 已有的 `Referer: origin` 做法只给这个域名单独加。
+     * 它不解决全部风控（验证码页仍可能出现），但明显好过裸请求。
+     */
+    let referer: string | undefined;
+    try {
+      if (new URL(url).hostname === "mp.weixin.qq.com") {
+        referer = "https://mp.weixin.qq.com/";
+      }
+    } catch {
+      // URL 非法时 httpFetch 自己会报错，这里只是不补头
+    }
+
     const res = await httpFetch(url, {
       redirect: "follow",
       signal: controller.signal,
@@ -69,6 +87,7 @@ export async function fetchHtml(
           "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         "Cache-Control": "no-cache",
+        ...(referer ? { Referer: referer } : {}),
         ...(cookie ? { Cookie: cookie } : {}),
       },
     });
