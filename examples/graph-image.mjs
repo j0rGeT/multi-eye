@@ -13,7 +13,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-const BASE = process.env.MUTIEYE_BASE ?? "http://localhost:3000";
+const BASE = process.env.DEEPEYE_BASE ?? "http://localhost:3000";
 
 function parseArgs(argv) {
   const out = { sessionId: null, out: null, docs: true, width: 1600, seed: 42, style: "default" };

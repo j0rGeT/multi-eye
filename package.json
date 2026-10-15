@@ -1,5 +1,5 @@
 {
-  "name": "muti-eye",
+  "name": "deepeye",
   "version": "0.2.0",
   "description": "主题资源拓扑与资料抓取桌面工具",
   "author": "j0rGeT",
@@ -11,7 +11,7 @@
     "build": "next build",
     "start": "next start -p 3000",
     "desktop": "next build && electron electron/main.mjs",
-    "desktop:dev": "MUTIEYE_DEV=1 electron electron/main.mjs",
+    "desktop:dev": "DEEPEYE_DEV=1 electron electron/main.mjs",
     "desktop:pack": "next build && electron-builder --config electron-builder.yml",
     "typecheck": "tsc --noEmit",
     "example": "node examples/e2e.mjs",

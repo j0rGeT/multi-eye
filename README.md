@@ -1,4 +1,4 @@
-# muti-eye · 智能多源搜研与知识星云拓扑系统
+# DeepEye · 智能多源搜研与知识星云拓扑系统
 
 <p align="center">
   <img src="https://img.shields.io/badge/Next.js-16.4-black?style=flat-square&logo=next.js" alt="Next.js" />
@@ -16,7 +16,7 @@
 
 在大模型时代，获取信息不再困难，困难的是**如何从海量零散长尾网页中提炼出结构化的高维决策知识**。传统的搜索引擎给出的只是一列线性卡片列表，用户必须逐条点击、肉眼分辨真伪与切题程度，面对“大模型-高校机构-技术实现-开源产品”这类复杂的纵深主题时极易迷失。
 
-**muti-eye** 致力于将一次主题调研转化为一张**结构分明、时序演进清晰、可交互穿透的活拓扑**：
+**DeepEye** 致力于将一次主题调研转化为一张**结构分明、时序演进清晰、可交互穿透的活拓扑**：
 1. **多源穿透检索**：聚合 SearXNG、Serper、B站公开接口、YouTube、知乎、小红书扫码登录态、微信公众号等，跨平台穿透长尾反爬屏障。
 2. **体裁与价值预筛**：前置拦截招聘、招投标、二手交易及用户主页等噪音，配合词法/LLM 双轨相关性评测，确保抓取成本用在刀刃上。
 3. **全息实体构图与关系去乱**：
@@ -100,13 +100,13 @@
 
 ```bash
 # 1. 克隆代码仓库
-git clone https://github.com/j0rGeT/muti-eye.git
-cd muti-eye
+git clone https://github.com/j0rGeT/multi-eye.git
+cd multi-eye
 
 # 2. 复制并按需配置环境变量（全部可留空，未配置的能力自动降级）
 cp .env.example .env.local
 
-# 3. 启动全套服务容器（包含 muti-eye 应用与 SearXNG 搜索后端）
+# 3. 启动全套服务容器（包含 DeepEye 应用与 SearXNG 搜索后端）
 docker compose up -d
 
 # 4. 访问服务
@@ -114,7 +114,7 @@ docker compose up -d
 ```
 
 > **服务端口映射说明**：
-> - `muti-eye 应用`：`http://localhost:3000`
+> - `DeepEye 应用`：`http://localhost:3000`
 > - `SearXNG 搜索引擎`：`http://localhost:8888`
 > - 容器内运行健康检查：`docker compose ps`
 

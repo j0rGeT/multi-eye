@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 import next from "next";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const port = Number(process.env.MUTIEYE_PORT ?? 3173);
-const externalUrl = process.env.MUTIEYE_URL?.trim();
+const port = Number(process.env.DEEPEYE_PORT ?? 3173);
+const externalUrl = process.env.DEEPEYE_URL?.trim();
 
 let server;
 let nextServer;
@@ -17,14 +17,14 @@ let mainWindow;
  * 桌面壳只负责两件事：起一个本地 Next 服务、打开一个隔离的窗口。
  *
  * 服务跑在 Electron 自己的 Node 运行时里，不依赖用户额外安装 Node；
- * `MUTIEYE_URL` 则留给已经起好开发服务器的场景，方便热更新调试。
+ * `DEEPEYE_URL` 则留给已经起好开发服务器的场景，方便热更新调试。
  */
 async function startServer() {
   if (externalUrl) return externalUrl;
 
   nextServer = next({
     dev:
-      process.env.MUTIEYE_DEV === "1" ||
+      process.env.DEEPEYE_DEV === "1" ||
       !existsSync(path.join(rootDir, ".next", "BUILD_ID")),
     dir: rootDir,
     hostname: "127.0.0.1",

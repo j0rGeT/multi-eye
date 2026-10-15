@@ -246,7 +246,7 @@ async function walk(dir, prefix = "") {
 
 // ─────────────────────────── 主流程 ───────────────────────────
 
-console.log(C.bold(`\nmuti-eye 全链路验证 · 主题「${QUERY}」`));
+console.log(C.bold(`\nDeepEye 全链路验证 · 主题「${QUERY}」`));
 console.log(C.dim(`目标 ${BASE} · 站点 ${SITES.join("/")} · LLM ${WITH_LLM ? "跑" : "跳过"}`));
 
 let sessionId = null;

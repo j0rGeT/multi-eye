@@ -1,10 +1,10 @@
 services:
-  # ── muti-eye 知识拓扑与深度调研服务 ──
+  # ── DeepEye 知识拓扑与深度调研服务 ──
   app:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: muti-eye-app
+    container_name: deepeye-app
     ports:
       - "3000:3000"
     environment:
@@ -27,7 +27,7 @@ services:
   # ── SearXNG 多引擎聚合搜索服务 ──
   searxng:
     image: searxng/searxng:latest
-    container_name: muti-eye-searxng
+    container_name: deepeye-searxng
     ports:
       # 宿主机 8888 -> 容器 8080（避开常见的 8080 占用）
       - "8888:8080"

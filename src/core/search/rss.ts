@@ -174,7 +174,7 @@ export async function fetchFeed(feed: Feed): Promise<FeedEntry[]> {
       Accept:
         "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
       // 有些站对没有 UA 的请求直接返回 SPA 外壳（见 feedstore.ts 的实测记录）
-      "User-Agent": "Mozilla/5.0 (compatible; muti-eye/0.1)",
+      "User-Agent": "Mozilla/5.0 (compatible; DeepEye/0.2)",
     },
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);

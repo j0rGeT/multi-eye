@@ -49,7 +49,7 @@ if anchor not in src:
     print("   期望在 request() 里找到 setlang/cc 那两行。", file=sys.stderr)
     sys.exit(1)
 
-patch = anchor + '''        # [muti-eye patch] mkt 必须发送，见 scripts/searxng-patch.sh 的说明。
+patch = anchor + '''        # [DeepEye patch] mkt 必须发送，见 scripts/searxng-patch.sh 的说明。
         # 本文件顶部的 get_locale_params() 正是为此而写，但从未被调用（上游 bug）。
         query_params["mkt"] = engine_region
 '''

@@ -1,5 +1,5 @@
-appId: com.github.j0rGeT.muti-eye
-productName: muti-eye
+appId: com.github.j0rGeT.deepeye
+productName: DeepEye
 directories:
   output: release
 files:

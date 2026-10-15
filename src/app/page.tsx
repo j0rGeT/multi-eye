@@ -935,7 +935,7 @@ export default function Home() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          muti-eye
+          DeepEye
           <span>主题资源拓扑</span>
         </div>
 

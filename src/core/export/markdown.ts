@@ -736,7 +736,7 @@ function footer(graph: GraphModel | undefined): string {
   const lines = [
     "---",
     "",
-    "本报告由 muti-eye 自动生成：搜索引擎负责发现，站点适配器负责抓取正文，",
+    "本报告由 DeepEye 自动生成：搜索引擎负责发现，站点适配器负责抓取正文，",
     "分词与共现分析负责组织结构。仅访问公开页面，不使用任何登录态。",
   ];
   if (graph?.stats.llmFallbackReason) {

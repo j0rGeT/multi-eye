@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "muti-eye — 主题资源拓扑",
+  title: "DeepEye — 主题资源拓扑",
   description: "跨站点搜集资料，生成知识拓扑，导出 Markdown",
 };
 
