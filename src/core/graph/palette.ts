@@ -19,6 +19,43 @@ export const CLUSTER_COLORS = [
 ] as const;
 
 /**
+ * 实体类型 → 边框/光环色。
+ *
+ * 与簇色解耦：**簇色回答「属于哪个主题」（节点填充），类型色回答「这是什么身份」
+ * （节点边框/3D 光环）**。两层语义画在同一节点上互不干扰 —— 一眼既能看出主题
+ * 归属，又能按组织/技术/产品过滤与高亮。
+ *
+ * 六个类型与两条构图路径（LLM 的 ENTITY_TYPES、启发式的 inferKeywordType）对齐。
+ */
+export const ENTITY_TYPE_COLORS: Record<string, string> = {
+  组织: "#f85149", // 珊瑚橙
+  技术: "#58a6ff", // 科技蓝
+  产品: "#3fb950", // 翡翠绿
+  概念: "#bc8cff", // 紫罗兰
+  人物: "#d29922", // 琥珀金
+  地点: "#39c5cf", // 青绿
+};
+
+/**
+ * 类型展示顺序。过滤条与图例按这个顺序渲染，保证不同图之间位置稳定
+ * —— 按出现频次排会让「技术」和「产品」的按钮每次构图后互换位置。
+ */
+export const ENTITY_TYPE_ORDER = [
+  "组织",
+  "技术",
+  "产品",
+  "概念",
+  "人物",
+  "地点",
+] as const;
+
+/** 取实体类型色。未知/未分类返回 undefined（调用方回退到默认边框色）。 */
+export function entityTypeColor(type?: string): string | undefined {
+  if (!type) return undefined;
+  return ENTITY_TYPE_COLORS[type];
+}
+
+/**
  * 拓扑图风格键名。
  */
 export type GraphStyleKey = "default" | "dark" | "paper" | "contrast";
@@ -62,6 +99,15 @@ export interface GraphStyleTheme {
   edgeOpacity: number;
   /** 普通边线型 */
   edgeLineStyle: "solid" | "dashed" | "dotted";
+  /**
+   * 共现边（`kind="cooccur"`）的线型与不透明度。
+   *
+   * 共现只意味着「两个词在一段窗口里同时出现过」，没有任何语义 —— 它是全图
+   * 边数最多的一类，也是「毛球感」的主要来源。虚线 + 低透明度让它退到背景，
+   * 真正的语义关系边（relation）才能一眼跳出来。
+   */
+  edgeCooccurLineStyle: "solid" | "dashed" | "dotted";
+  edgeCooccurOpacity: number;
   /** 包含关系 edge[kind="contains"] 在前端 Cytoscape 的颜色 */
   edgeContainsColor: string;
   /** 包含关系 edge[kind="contains"] 在前端 Cytoscape 的不透明度 */
@@ -165,6 +211,8 @@ export const GRAPH_STYLES: Record<GraphStyleKey, GraphStyleTheme> = {
     edgeColor: "#30363d",
     edgeOpacity: 0.55,
     edgeLineStyle: "solid",
+    edgeCooccurLineStyle: "dashed",
+    edgeCooccurOpacity: 0.32,
     edgeContainsColor: "#21262d",
     edgeContainsOpacity: 0.4,
     edgeContainsLineStyle: "dotted",
@@ -205,6 +253,8 @@ export const GRAPH_STYLES: Record<GraphStyleKey, GraphStyleTheme> = {
     edgeColor: "#485260",
     edgeOpacity: 0.72,
     edgeLineStyle: "solid",
+    edgeCooccurLineStyle: "dashed",
+    edgeCooccurOpacity: 0.4,
     edgeContainsColor: "#2d3540",
     edgeContainsOpacity: 0.52,
     edgeContainsLineStyle: "dotted",
@@ -245,6 +295,8 @@ export const GRAPH_STYLES: Record<GraphStyleKey, GraphStyleTheme> = {
     edgeColor: "#b5aea2",
     edgeOpacity: 0.68,
     edgeLineStyle: "solid",
+    edgeCooccurLineStyle: "dashed",
+    edgeCooccurOpacity: 0.42,
     edgeContainsColor: "#cdc6ba",
     edgeContainsOpacity: 0.6,
     edgeContainsLineStyle: "dotted",
@@ -286,6 +338,8 @@ export const GRAPH_STYLES: Record<GraphStyleKey, GraphStyleTheme> = {
     edgeColor: "#808080",
     edgeOpacity: 0.8,
     edgeLineStyle: "dashed",
+    edgeCooccurLineStyle: "dashed",
+    edgeCooccurOpacity: 0.55,
     edgeContainsColor: "#595959",
     edgeContainsOpacity: 0.65,
     edgeContainsLineStyle: "dotted",

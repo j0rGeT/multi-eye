@@ -82,6 +82,10 @@ export async function buildHeuristicGraph(
   // ── 3. 共现建边 ──
   const cooccur = new Map<string, number>();
   const docKeywords = new Map<string, Set<string>>();
+  // 每个词的词性统计（word → tag → 次数），供 assemble 推断实体类型用。
+  // 一个词在不同文档里可能被标成不同词性（jieba 对专名不稳定），所以按
+  // 出现次数取主导词性，而不是信第一次标注。
+  const tagCounts = new Map<string, Map<string, number>>();
 
   for (const { doc, tokens } of tokenized) {
     const present = new Set<string>();
@@ -91,6 +95,9 @@ export async function buildHeuristicGraph(
       if (!keywordSet.has(t.word)) return;
       present.add(t.word);
       hits.push({ word: t.word, pos: i });
+      let byTag = tagCounts.get(t.word);
+      if (!byTag) tagCounts.set(t.word, (byTag = new Map()));
+      byTag.set(t.tag, (byTag.get(t.tag) ?? 0) + 1);
     });
 
     docKeywords.set(doc.id, present);
@@ -131,6 +138,7 @@ export async function buildHeuristicGraph(
     tfidf,
     docKeywords,
     communities,
+    tagCounts,
     durationMs: Date.now() - t0,
   });
 }
@@ -177,11 +185,14 @@ interface AssembleInput {
   tfidf: ReturnType<typeof computeTfidf>;
   docKeywords: Map<string, Set<string>>;
   communities: ReturnType<typeof detectCommunities>;
+  /** word → tag → 出现次数，用于推断 keyword 节点的实体类型。 */
+  tagCounts: Map<string, Map<string, number>>;
   durationMs: number;
 }
 
 function assemble(input: AssembleInput): GraphModel {
-  const { topic, docs, keywords, edges, tfidf, docKeywords, communities } = input;
+  const { topic, docs, keywords, edges, tfidf, docKeywords, communities, tagCounts } =
+    input;
 
   const nodes: GraphNode[] = [];
   const graphEdges: GraphEdge[] = [];
@@ -204,6 +215,8 @@ function assemble(input: AssembleInput): GraphModel {
       // 支撑这个词的资料 id —— 前端点节点后据此列出原文
       docIds: [...posting.keys()],
       clusterId: communities.assignment.get(word) ?? "c0",
+      // 实体类型：与 LLM 路径的 ENTITY_TYPES 对齐，让过滤器/边色在两条构图路径上都能用
+      type: inferKeywordType(word, dominantTag(tagCounts.get(word))),
     });
   }
 
@@ -328,10 +341,77 @@ function dominantCluster(
   return [...tally.entries()].sort((a, b) => b[1] - a[1])[0][0];
 }
 
+/**
+ * 推断一个关键词的实体类型。
+ *
+ * 与 LLM 构图路径的 ENTITY_TYPES（人物/组织/技术/产品/概念/地点）对齐，
+ * 这样无论图是启发式还是 LLM 生成的，前端的类型过滤与边色都能直接用。
+ *
+ * 三层判据，精确度从高到低：
+ *   1. 中文词形后缀 —— 「xx大学」「xx算法」这种结构在中文里极其稳定，
+ *      比 jieba 的粗粒度 n 标注可靠得多，所以放在最前面。
+ *   2. jieba 词性 —— nt=机构、nr=人名、ns=地名 都是细粒度标注，可直接采信；
+ *      eng/nz（外文专名）区分不出产品还是技术，留给第 3 层的后缀再判一次。
+ *   3. 默认「概念」—— 宁可判宽不判错，一个误标成「技术」的概念会让用户
+ *      在按类型过滤时凭空丢掉它。
+ */
+export function inferKeywordType(
+  word: string,
+  dominant: string | undefined,
+): string {
+  const lower = word.toLowerCase();
+
+  // ── 1. 词形后缀 ──
+  if (
+    /(大学|学院|研究院|研究所|实验室|集团|公司|企业|基金会|委员会|协会|团队|中心)$/.test(
+      word,
+    )
+  ) {
+    return "组织";
+  }
+  if (
+    /(算法|模型|框架|协议|架构|引擎|内核|编译器|数据库|操作系统|网络|驱动|缓存|系统)$/.test(
+      word,
+    )
+  ) {
+    return "技术";
+  }
+  if (/(版|pro|max|plus|mini|lite|sdk|api|cli|app|os|平台|助手|套件)$/i.test(lower)) {
+    return "产品";
+  }
+
+  // ── 2. jieba 词性兜底 ──
+  if (dominant === "nt") return "组织";
+  if (dominant === "nr") return "人物";
+  if (dominant === "ns") return "地点";
+  // 外文专名（eng/nz）再看一次英文后缀：XxxDB/XxxOS 更可能是产品，XxxNet/Transformer 更可能是技术
+  if (dominant === "eng" || dominant === "nz") {
+    if (/(db|os|kit|suite|app|cloud)$/.test(lower)) return "产品";
+    if (/(net|transformer|bert|gpt|llm|cnn|rnn|gan)$/.test(lower)) return "技术";
+    return "产品";
+  }
+
+  // ── 3. 默认 ──
+  return "概念";
+}
+
+/** 取出现次数最多的词性；相同次数时取字典序小的，保证结果稳定可复现。 */
+function dominantTag(byTag: Map<string, number> | undefined): string | undefined {
+  if (!byTag || byTag.size === 0) return undefined;
+  let best: string | undefined;
+  let bestCount = -1;
+  for (const [tag, count] of byTag) {
+    if (count > bestCount || (count === bestCount && best !== undefined && tag < best)) {
+      best = tag;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
 export function kwId(word: string): string {
   return `k:${word}`;
 }
-
 export function docId(id: string): string {
   return `d:${id}`;
 }

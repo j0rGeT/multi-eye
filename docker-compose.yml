@@ -1,4 +1,30 @@
 services:
+  # ── muti-eye 知识拓扑与深度调研服务 ──
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: muti-eye-app
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+      # 容器内网络直连 SearXNG 服务
+      - SEARXNG_URL=http://searxng:8080
+      # 若需配置 LLM 模型能力，请在 .env.local 或此处填入
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_BASE_URL=${LLM_BASE_URL:-}
+      - LLM_MODEL=${LLM_MODEL:-}
+    volumes:
+      # 持久化调研会话数据与本地登录态
+      - ./data:/app/data
+    depends_on:
+      - searxng
+    restart: unless-stopped
+
+  # ── SearXNG 多引擎聚合搜索服务 ──
   searxng:
     image: searxng/searxng:latest
     container_name: muti-eye-searxng

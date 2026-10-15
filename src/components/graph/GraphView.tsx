@@ -43,6 +43,7 @@ import fcose from "cytoscape-fcose";
 import type {
   Cluster,
   Document,
+  EdgeKind,
   GraphModel,
   GraphNode,
   SessionViewState,
@@ -50,12 +51,14 @@ import type {
 import {
   clusterColor,
   clusterIndexMap,
+  ENTITY_TYPE_COLORS,
   getGraphTheme,
   type GraphStyleKey,
   type GraphStyleTheme,
 } from "@/core/graph/palette";
 import { edgeWidth, isCoreNode, nodeSize } from "@/core/graph/geometry";
 import { buildYearDimensions, type YearDimensionStat } from "@/core/graph/timeline";
+import GraphFilterBar from "./GraphFilterBar";
 import GraphLegend from "./GraphLegend";
 import GraphToolbar from "./GraphToolbar";
 import GraphTooltip, { type TooltipState } from "./GraphTooltip";
@@ -178,6 +181,14 @@ function buildCyStylesheet(theme: GraphStyleTheme): StylesheetStyle[] {
       },
     },
     {
+      /** 共现边：虚线 + 弱化透明度，大幅消除发线团毛球感 */
+      selector: 'edge[kind = "cooccur"]',
+      style: {
+        "line-style": theme.edgeCooccurLineStyle,
+        opacity: theme.edgeCooccurOpacity,
+      },
+    },
+    {
       selector: 'edge[kind = "contains"]',
       style: {
         "line-style": theme.edgeContainsLineStyle,
@@ -186,9 +197,8 @@ function buildCyStylesheet(theme: GraphStyleTheme): StylesheetStyle[] {
       },
     },
     /*
-      LLM 构图会给关系边一个谓词（例如「优化 / 支持」）。把谓词直接标在
-      线上，选中邻域时就能看出“这两个概念是什么关系”，而不用回到右栏逐条
-      对照边列表；启发式构图没有 relation 边，因此不会增加噪音。
+      关系边（relation）：核心语义关联。实线高亮 + 显式谓词标签。
+      把谓词直接标在线上，一眼看出“大模型与高校是研发关系、与技术是实现关系”。
     */
     {
       selector: 'edge[kind = "relation"]',
@@ -197,14 +207,23 @@ function buildCyStylesheet(theme: GraphStyleTheme): StylesheetStyle[] {
         "line-color": theme.edgeRelationColor,
         opacity: theme.edgeRelationOpacity,
         label: "data(label)",
-        "font-size": 8,
+        "font-size": 8.5,
+        "font-weight": 600,
         color: theme.relationLabelColor,
         "text-background-color": theme.relationLabelBg,
-        "text-background-opacity": 0.85,
-        "text-background-padding": "2px",
+        "text-background-opacity": 0.88,
+        "text-background-padding": "3px",
         "text-rotation": "autorotate",
       },
     },
+    // 实体类型边框映射（与簇背景色双层共存：簇色定主题，边框色定身份）
+    ...Object.entries(ENTITY_TYPE_COLORS).map(([type, color]) => ({
+      selector: `node[type = "${type}"]`,
+      style: {
+        "border-color": color,
+        "border-width": 2.2,
+      },
+    })),
     // 选中的邻域（点击选中，或悬停时以悬停节点为中心）
     {
       selector: "node.highlighted",
@@ -351,10 +370,21 @@ export default function GraphView({
   const [showTimeline, setShowTimeline] = useState<boolean>(
     initialView?.showTimeline ?? true,
   );
+  const [hiddenNodeTypes, setHiddenNodeTypes] = useState<Set<string>>(
+    () => new Set(initialView?.hiddenNodeTypes ?? []),
+  );
+  const [hiddenEdgeKinds, setHiddenEdgeKinds] = useState<Set<EdgeKind>>(
+    () => new Set(initialView?.hiddenEdgeKinds ?? []),
+  );
+
   const layoutModeRef = useRef<"free" | "yearly">(layoutMode);
   layoutModeRef.current = layoutMode;
   const showTimelineRef = useRef<boolean>(showTimeline);
   showTimelineRef.current = showTimeline;
+  const hiddenNodeTypesRef = useRef(hiddenNodeTypes);
+  hiddenNodeTypesRef.current = hiddenNodeTypes;
+  const hiddenEdgeKindsRef = useRef(hiddenEdgeKinds);
+  hiddenEdgeKindsRef.current = hiddenEdgeKinds;
   const graphStyleRef = useRef<GraphStyleKey>(graphStyle);
   graphStyleRef.current = graphStyle;
   const theme = useMemo(() => getGraphTheme(graphStyle), [graphStyle]);
@@ -378,9 +408,12 @@ export default function GraphView({
     const maxWeight = Math.max(1, ...graph.nodes.map((n) => n.weight));
     const maxEdge = Math.max(1, ...graph.edges.map((e) => e.weight));
 
-    const visibleNodes = graph.nodes.filter(
-      (n) => showDocuments || n.kind !== "document",
-    );
+    const visibleNodes = graph.nodes.filter((n) => {
+      if (!showDocuments && n.kind === "document") return false;
+      // 实体类型过滤：如果节点的 type 在隐藏列表中，则不展示
+      if (n.type && hiddenNodeTypes.has(n.type)) return false;
+      return true;
+    });
 
     const nodes: ElementDefinition[] = visibleNodes.map((n) => {
       const yearLabel = n.publishedYear ? ` [${n.publishedYear}${n.isYearInferred ? "*" : ""}]` : "";
@@ -394,6 +427,7 @@ export default function GraphView({
           publishedYear: n.publishedYear,
           isYearInferred: n.isYearInferred,
           kind: n.kind,
+          type: n.type,
           weight: n.weight,
           degree: n.degree,
           clusterId: n.clusterId,
@@ -410,7 +444,12 @@ export default function GraphView({
     const visible = new Set(visibleNodes.map((n) => n.id));
 
     const edges: ElementDefinition[] = graph.edges
-      .filter((e) => visible.has(e.source) && visible.has(e.target))
+      .filter((e) => {
+        if (!visible.has(e.source) || !visible.has(e.target)) return false;
+        // 边类型过滤：如果边的 kind 在隐藏列表中，则不展示
+        if (hiddenEdgeKinds.has(e.kind)) return false;
+        return true;
+      })
       .map((e) => ({
         data: {
           id: e.id,
@@ -424,7 +463,7 @@ export default function GraphView({
       }));
 
     return { nodeDefs: nodes, edgeDefs: edges };
-  }, [graph, showDocuments, layoutMode, graphStyle]);
+  }, [graph, showDocuments, layoutMode, graphStyle, hiddenNodeTypes, hiddenEdgeKinds]);
 
   // ── 位置持久化（debounce）──
   const saveTimer = useRef<number | null>(null);
@@ -445,6 +484,8 @@ export default function GraphView({
       showDocuments: showDocumentsRef.current,
       layoutMode: layoutModeRef.current,
       showTimeline: showTimelineRef.current,
+      hiddenNodeTypes: [...hiddenNodeTypesRef.current],
+      hiddenEdgeKinds: [...hiddenEdgeKindsRef.current],
     });
   }, []);
 
@@ -905,6 +946,75 @@ export default function GraphView({
     });
   }, []);
 
+  // ── 节点类型与边类型过滤回调 ──
+  const handleToggleNodeType = useCallback((type: string) => {
+    setHiddenNodeTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(type)) next.delete(type);
+      else next.add(type);
+      hiddenNodeTypesRef.current = next;
+      scheduleSaveRef.current();
+      return next;
+    });
+  }, []);
+
+  const handleResetNodeTypes = useCallback(() => {
+    setHiddenNodeTypes(new Set());
+    hiddenNodeTypesRef.current = new Set();
+    scheduleSaveRef.current();
+  }, []);
+
+  const handleToggleEdgeKind = useCallback((kind: EdgeKind) => {
+    setHiddenEdgeKinds((prev) => {
+      const next = new Set(prev);
+      if (next.has(kind)) next.delete(kind);
+      else next.add(kind);
+      hiddenEdgeKindsRef.current = next;
+      scheduleSaveRef.current();
+      return next;
+    });
+  }, []);
+
+  const handleShowOnlyRelations = useCallback(() => {
+    const next = new Set<EdgeKind>(["cooccur", "contains"]);
+    setHiddenEdgeKinds(next);
+    hiddenEdgeKindsRef.current = next;
+    scheduleSaveRef.current();
+  }, []);
+
+  const handleResetEdgeKinds = useCallback(() => {
+    setHiddenEdgeKinds(new Set());
+    hiddenEdgeKindsRef.current = new Set();
+    scheduleSaveRef.current();
+  }, []);
+
+  // 当前图中出现的节点类型与边类型统计
+  const { availableNodeTypes, nodeTypeCounts, edgeKindCounts } = useMemo(() => {
+    const types: Record<string, number> = {};
+    for (const n of graph.nodes) {
+      if (n.type) {
+        types[n.type] = (types[n.type] ?? 0) + 1;
+      }
+    }
+
+    const edges: Record<EdgeKind, number> = {
+      relation: 0,
+      cooccur: 0,
+      contains: 0,
+    };
+    for (const e of graph.edges) {
+      if (e.kind in edges) {
+        edges[e.kind] += 1;
+      }
+    }
+
+    return {
+      availableNodeTypes: Object.keys(types),
+      nodeTypeCounts: types,
+      edgeKindCounts: edges,
+    };
+  }, [graph]);
+
   return (
     <div
       ref={panelRef}
@@ -923,6 +1033,19 @@ export default function GraphView({
         <div
           ref={containerRef}
           className={`graph-cy${boxSelect ? " box-select" : ""}`}
+        />
+
+        <GraphFilterBar
+          availableNodeTypes={availableNodeTypes}
+          nodeTypeCounts={nodeTypeCounts}
+          hiddenNodeTypes={hiddenNodeTypes}
+          onToggleNodeType={handleToggleNodeType}
+          onResetNodeTypes={handleResetNodeTypes}
+          edgeKindCounts={edgeKindCounts}
+          hiddenEdgeKinds={hiddenEdgeKinds}
+          onToggleEdgeKind={handleToggleEdgeKind}
+          onShowOnlyRelations={handleShowOnlyRelations}
+          onResetEdgeKinds={handleResetEdgeKinds}
         />
 
         <GraphToolbar

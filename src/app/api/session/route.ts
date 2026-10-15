@@ -49,6 +49,27 @@ function sanitizeViewState(raw: unknown): SessionViewState | null {
     out.showDocuments = src.showDocuments;
   }
 
+  if (src.layoutMode === "free" || src.layoutMode === "yearly") {
+    out.layoutMode = src.layoutMode;
+  }
+
+  if (typeof src.showTimeline === "boolean") {
+    out.showTimeline = src.showTimeline;
+  }
+
+  if (Array.isArray(src.hiddenNodeTypes)) {
+    out.hiddenNodeTypes = src.hiddenNodeTypes
+      .filter((t): t is string => typeof t === "string" && t.length < 50)
+      .slice(0, 30);
+  }
+
+  if (Array.isArray(src.hiddenEdgeKinds)) {
+    const validKinds = new Set(["cooccur", "relation", "contains"]);
+    out.hiddenEdgeKinds = src.hiddenEdgeKinds
+      .filter((k): k is "cooccur" | "relation" | "contains" => typeof k === "string" && validKinds.has(k))
+      .slice(0, 10);
+  }
+
   return out;
 }
 
