@@ -8,6 +8,7 @@ import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeome
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import type {
   Document,
+  EdgeKind,
   GraphModel,
   GraphNode,
   SessionViewState,
@@ -15,10 +16,12 @@ import type {
 import {
   clusterColor,
   clusterIndexMap,
+  entityTypeColor,
   getGraphTheme,
   type GraphStyleKey,
 } from "@/core/graph/palette";
 import { isCoreNode, nodeSize } from "@/core/graph/geometry";
+import GraphFilterBar from "./GraphFilterBar";
 import GraphLegend from "./GraphLegend";
 import GraphToolbar from "./GraphToolbar";
 import GraphTooltip, { type TooltipState } from "./GraphTooltip";
@@ -42,6 +45,7 @@ interface NodeData3D {
   id: string;
   label: string;
   kind: string;
+  type?: string;
   weight: number;
   clusterId: string;
   color: string;
@@ -182,6 +186,32 @@ export default function GraphView3D({
   const pinnedRef = useRef<Set<string>>(new Set());
   const [pinnedCount, setPinnedCount] = useState(0);
 
+  const [hiddenNodeTypes, setHiddenNodeTypes] = useState<Set<string>>(
+    () => new Set(initialView?.hiddenNodeTypes ?? []),
+  );
+  const [hiddenEdgeKinds, setHiddenEdgeKinds] = useState<Set<EdgeKind>>(
+    () => new Set(initialView?.hiddenEdgeKinds ?? []),
+  );
+
+  const hiddenNodeTypesRef = useRef(hiddenNodeTypes);
+  hiddenNodeTypesRef.current = hiddenNodeTypes;
+  const hiddenEdgeKindsRef = useRef(hiddenEdgeKinds);
+  hiddenEdgeKindsRef.current = hiddenEdgeKinds;
+
+  const onViewChangeRef = useRef(onViewChange);
+  onViewChangeRef.current = onViewChange;
+  const showDocumentsRef = useRef(showDocuments);
+  showDocumentsRef.current = showDocuments;
+
+  const triggerSave = useCallback(() => {
+    onViewChangeRef.current?.({
+      pinned: [...pinnedRef.current],
+      showDocuments: showDocumentsRef.current,
+      hiddenNodeTypes: [...hiddenNodeTypesRef.current],
+      hiddenEdgeKinds: [...hiddenEdgeKindsRef.current],
+    });
+  }, []);
+
   const theme = useMemo(() => getGraphTheme(graphStyle), [graphStyle]);
 
   // 力导向衰减状态
@@ -193,9 +223,11 @@ export default function GraphView3D({
     const clusterIndex = clusterIndexMap(graph.clusters);
     const maxWeight = Math.max(1, ...graph.nodes.map((n) => n.weight));
 
-    const visibleNodes = graph.nodes.filter(
-      (n) => showDocuments || n.kind !== "document",
-    );
+    const visibleNodes = graph.nodes.filter((n) => {
+      if (!showDocuments && n.kind === "document") return false;
+      if (n.type && hiddenNodeTypes.has(n.type)) return false;
+      return true;
+    });
     const visibleIdSet = new Set(visibleNodes.map((n) => n.id));
 
     // 为每个簇分配空间极坐标初始偏置，形成自然星系簇云
@@ -231,6 +263,7 @@ export default function GraphView3D({
         id: n.id,
         label: n.label,
         kind: n.kind,
+        type: n.type,
         weight: n.weight,
         clusterId: n.clusterId,
         color:
@@ -253,7 +286,11 @@ export default function GraphView3D({
     });
 
     const eList: EdgeData3D[] = graph.edges
-      .filter((e) => visibleIdSet.has(e.source) && visibleIdSet.has(e.target))
+      .filter((e) => {
+        if (!visibleIdSet.has(e.source) || !visibleIdSet.has(e.target)) return false;
+        if (hiddenEdgeKinds.has(e.kind)) return false;
+        return true;
+      })
       .map((e) => ({
         id: e.id,
         source: e.source,
@@ -264,7 +301,7 @@ export default function GraphView3D({
       }));
 
     return { nodes3D: nList, edges3D: eList, nodeMap: nMap };
-  }, [graph, showDocuments, graphStyle, theme]);
+  }, [graph, showDocuments, graphStyle, theme, hiddenNodeTypes, hiddenEdgeKinds]);
 
   // 共享几何体和通用材质缓存
   const sphereGeoMap = useRef<Map<number, THREE.SphereGeometry>>(new Map());
@@ -447,6 +484,21 @@ export default function GraphView3D({
           halo.name = "glowHalo";
           mesh.add(halo);
           n.glowMesh = halo;
+        }
+
+        // 实体类型外层光环（Type Ring）：用实体类型色标记高校/机构/技术等身份
+        const typeCol = entityTypeColor(n.type);
+        if (typeCol) {
+          const ringGeo = new THREE.RingGeometry(r * 1.18, r * 1.34, 24);
+          const ringMat = new THREE.MeshBasicMaterial({
+            color: new THREE.Color(typeCol),
+            side: THREE.DoubleSide,
+            transparent: true,
+            opacity: 0.85,
+          });
+          const typeRing = new THREE.Mesh(ringGeo, ringMat);
+          typeRing.rotation.x = Math.PI / 4;
+          mesh.add(typeRing);
         }
 
         // 添加 Billboard 文字标签
@@ -636,8 +688,10 @@ export default function GraphView3D({
       // --- 同步连线顶点坐标与颜色 ---
       if (edgeLinesRef.current) {
         const { positions, colors, geometry } = edgeLinesRef.current;
+        // 连线色：区分 relation（语义关系）、contains（包含关系）、cooccur（统计共现）
         const defaultEdgeColor = new THREE.Color(theme.edgeColor);
         const defaultContainsColor = new THREE.Color(theme.edgeContainsColor);
+        const defaultRelationColor = new THREE.Color(theme.edgeRelationColor);
 
         for (let i = 0; i < edges3D.length; i++) {
           const e = edges3D[i];
@@ -655,7 +709,11 @@ export default function GraphView3D({
 
           // 连线色
           const col =
-            e.kind === "contains" ? defaultContainsColor : defaultEdgeColor;
+            e.kind === "contains"
+              ? defaultContainsColor
+              : e.kind === "relation"
+                ? defaultRelationColor
+                : defaultEdgeColor;
           colors[idx] = col.r;
           colors[idx + 1] = col.g;
           colors[idx + 2] = col.b;
@@ -903,6 +961,75 @@ export default function GraphView3D({
     }
   }, []);
 
+  // ── 过滤相关回调 ──
+  const handleToggleNodeType = useCallback((type: string) => {
+    setHiddenNodeTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(type)) next.delete(type);
+      else next.add(type);
+      hiddenNodeTypesRef.current = next;
+      triggerSave();
+      return next;
+    });
+  }, [triggerSave]);
+
+  const handleResetNodeTypes = useCallback(() => {
+    setHiddenNodeTypes(new Set());
+    hiddenNodeTypesRef.current = new Set();
+    triggerSave();
+  }, [triggerSave]);
+
+  const handleToggleEdgeKind = useCallback((kind: EdgeKind) => {
+    setHiddenEdgeKinds((prev) => {
+      const next = new Set(prev);
+      if (next.has(kind)) next.delete(kind);
+      else next.add(kind);
+      hiddenEdgeKindsRef.current = next;
+      triggerSave();
+      return next;
+    });
+  }, [triggerSave]);
+
+  const handleShowOnlyRelations = useCallback(() => {
+    const next = new Set<EdgeKind>(["cooccur", "contains"]);
+    setHiddenEdgeKinds(next);
+    hiddenEdgeKindsRef.current = next;
+    triggerSave();
+  }, [triggerSave]);
+
+  const handleResetEdgeKinds = useCallback(() => {
+    setHiddenEdgeKinds(new Set());
+    hiddenEdgeKindsRef.current = new Set();
+    triggerSave();
+  }, [triggerSave]);
+
+  // 当前图中出现的节点类型与边类型统计
+  const { availableNodeTypes, nodeTypeCounts, edgeKindCounts } = useMemo(() => {
+    const types: Record<string, number> = {};
+    for (const n of graph.nodes) {
+      if (n.type) {
+        types[n.type] = (types[n.type] ?? 0) + 1;
+      }
+    }
+
+    const edges: Record<EdgeKind, number> = {
+      relation: 0,
+      cooccur: 0,
+      contains: 0,
+    };
+    for (const e of graph.edges) {
+      if (e.kind in edges) {
+        edges[e.kind] += 1;
+      }
+    }
+
+    return {
+      availableNodeTypes: Object.keys(types),
+      nodeTypeCounts: types,
+      edgeKindCounts: edges,
+    };
+  }, [graph]);
+
   return (
     <div
       ref={containerRef}
@@ -924,6 +1051,19 @@ export default function GraphView3D({
           height: "100%",
           overflow: "hidden",
         }}
+      />
+
+      <GraphFilterBar
+        availableNodeTypes={availableNodeTypes}
+        nodeTypeCounts={nodeTypeCounts}
+        hiddenNodeTypes={hiddenNodeTypes}
+        onToggleNodeType={handleToggleNodeType}
+        onResetNodeTypes={handleResetNodeTypes}
+        edgeKindCounts={edgeKindCounts}
+        hiddenEdgeKinds={hiddenEdgeKinds}
+        onToggleEdgeKind={handleToggleEdgeKind}
+        onShowOnlyRelations={handleShowOnlyRelations}
+        onResetEdgeKinds={handleResetEdgeKinds}
       />
 
       <GraphToolbar

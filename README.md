@@ -1,315 +1,207 @@
-# muti-eye · 主题资源拓扑
+# muti-eye · 智能多源搜研与知识星云拓扑系统
 
-输入一个主题，跨站点搜集资料 → 抓成正文 → 织成一张可交互的知识拓扑图 → 导出 Markdown 报告 → 把资料异步下载到本地。
+<p align="center">
+  <img src="https://img.shields.io/badge/Next.js-16.4-black?style=flat-square&logo=next.js" alt="Next.js" />
+  <img src="https://img.shields.io/badge/Three.js-3D%20Graph-orange?style=flat-square&logo=three.js" alt="Three.js" />
+  <img src="https://img.shields.io/badge/Cytoscape.js-2D%20Graph-blue?style=flat-square" alt="Cytoscape" />
+  <img src="https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker" alt="Docker" />
+  <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License" />
+</p>
+
+> **输入一个主题，跨站点穿透搜集海量长尾资料 → 智能预筛与深度抽取清洗 → 织成 2D/3D 可交互全息知识拓扑星云 → 实体分类与谓词关系去乱 → 导出专业 Markdown 深度调研报告并异步归档下载。**
+
+---
+
+## 📖 项目简介 (Overview)
+
+在大模型时代，获取信息不再困难，困难的是**如何从海量零散长尾网页中提炼出结构化的高维决策知识**。传统的搜索引擎给出的只是一列线性卡片列表，用户必须逐条点击、肉眼分辨真伪与切题程度，面对“大模型-高校机构-技术实现-开源产品”这类复杂的纵深主题时极易迷失。
+
+**muti-eye** 致力于将一次主题调研转化为一张**结构分明、时序演进清晰、可交互穿透的活拓扑**：
+1. **多源穿透检索**：聚合 SearXNG、Serper、B站公开接口、YouTube、知乎、小红书扫码登录态、微信公众号等，跨平台穿透长尾反爬屏障。
+2. **体裁与价值预筛**：前置拦截招聘、招投标、二手交易及用户主页等噪音，配合词法/LLM 双轨相关性评测，确保抓取成本用在刀刃上。
+3. **全息实体构图与关系去乱**：
+   - 区分**高校/机构**（组织）、**技术实现**（技术）、**衍生模型/工具**（产品）、**基础理论**（概念）等实体类别，双层映射视觉标签与类型环；
+   - 彻底梳理边关系：突出核心**语义谓词边**（实线加粗 + 直观谓词标签），弱化统计**共现边**（虚线淡化），消除稠密发线团，支持一键“仅看语义关系”；
+   - 引入 **10 年自适应时序分层** 与每年统计维度指标标尺，支持时序演进展平与动力学力导向双模切换。
+4. **2D/3D 双维空间渲染**：2D (Cytoscape + fcose) 精细拖拽微调与圈选锁定；3D (Three.js WebGL) 沉浸式太空星云穿梭、动态光子能量流与发光微环。
+5. **本地数据主权与交付**：零第三方数据库依赖，会话与资产完全落盘本地；一键导出带分簇章节的深度 Markdown 报告、多风格矢量 SVG 及离线媒体包。
+
+---
+
+## 🖼️ 最新效果展示 (Visual Showcase)
+
+下图为系统对前沿技术主题 **「Mooncake (KVCache 分离式架构与大模型推理调度优化)」** 进行全流程深度调研后，由生产级接口 `GET /api/export/image` 实时渲染生成的最新知识拓扑矢量大图：
+
+![Mooncake 知识星云拓扑](docs/topology-example.svg)
+
+> **✨ 视觉与交互特性：**
+> - **无方块圆徽美学**：彻底消除生硬的方形文档盒，所有资料节点与概念统一升级为精致圆形微徽章与晶体球。
+> - **双层身份感知**：节点背景色映射**主题簇**归属，外层边框与 3D 光环映射**实体类型**（珊瑚橙: 组织高校，科技蓝: 技术实现，翡翠绿: 模型产品，紫罗兰: 基础概念）。
+> - **显式谓词边**：大模型架构与具体高校研发、技术底座之间的关联直接以带方向的实线谓词标于线上（如 `[优化]`、`[支持]`、`[基于]`），共现边自动虚线弱化。
+
+---
+
+## ⚡ 全景工作流设计 (Architecture & Workflow)
 
 ```
-主题「露营装备」
-   ↓ 搜索      微信公众号 / 知乎 / B站 / YouTube / 掘金 / V2EX / 全网（SearXNG，可选 Serper）
-   ↓ 预筛      体裁过滤（拦截招聘/招标/二手）+ 词法/LLM 相关性双轨判定
-   ↓ 抓取      HTTP+Readability → 站点专用接口（B站/YouTube）→ 登录态/无头浏览器
-   ↓ 构图      实体关系图，4 种视觉风格切换（默认/深色/纸质/高对比），前端 Cytoscape + fcose 渲染
-   ↓ 导出      按主题簇分章的 Markdown 报告 / 多风格 SVG 拓扑图
-   ↓ 下载      并发队列 + 断点续传，本地离线 Markdown / 视频预览，SSE 推进度
+用户输入主题（如「Mooncake 推理优化」）+ 意图提示
+  │
+  ├─ 1. 查询规划与意图扩展 (Search Plan)
+  │     └─ 意图提取、型号消歧、专名别名扩展、各站点定制查询变体生成
+  │
+  ├─ 2. 深度多源检索 (Multi-source Search)
+  │     └─ 聚合 SearXNG / Serper / B站开放接口 / YouTube / 知乎 / 小红书 / 微信公众号
+  │
+  ├─ 3. 质量闸门与切题预筛 (Quality Gate & Relevance)
+  │     ├─ 体裁过滤：彻底阻断招聘、招标、二手交易、UP主个人主页
+  │     └─ 价值预判：区分部署实践/原理分析/短讯，跳过无实质价值的登录墙与标题党
+  │
+  ├─ 4. 深度正文抽取流水线 (Extraction Pipeline)
+  │     ├─ 站点适配器通道：B站 API (字幕/标签/简介)、YouTube yt-dlp 字幕
+  │     ├─ 真实正文穿透：知乎专属容器提取 + 本地 0600 安全扫码登录凭证
+  │     ├─ 防爬穿透：微信公众号补齐 Referer，JS 空壳页按需 Playwright 无头渲染
+  │     └─ HTML → 结构化纯净 Markdown 与图文清洗
+  │
+  ├─ 5. 全息知识星云构图 (Graph Modeling)
+  │     ├─ 启发式（jieba-wasm + POS 词性推导 + TF-IDF + Louvain 社区发现）
+  │     ├─ LLM 语义构图（实体属性抽取 + 谓词关联推导 + 综述生成）
+  │     ├─ 10年时序推导：支撑文档时间提取 + 拓扑邻居时序扩散 + 年度统计维度标尺
+  │     └─ 交互去乱控制：实体类型过滤 + 谓词边筛选（剔除毛球）
+  │
+  └─ 6. 成果交付与归档 (Delivery & Archives)
+        ├─ 2D/3D 可视化交互：4 种主题风格（默认暗调/极深暗夜/宣纸报告/高对比）
+        ├─ 深度调研报告：按主题簇分章的 Markdown 文档与矢量 SVG
+        └─ 离线资源包：带断点续传与原子落盘的多媒体/文章本地下载
 ```
 
-## 它长什么样
+---
 
-![露营装备 · 知识拓扑](docs/topology-example.svg)
+## 🚀 核心特性矩阵 (Key Features)
 
-这张图**不是手画的示意图**，是跑出来的产物：主题「露营装备」，26 个节点
-（23 个概念 + 3 篇资料）、51 条边、4 个簇，走的是 LLM 语义构图。它是
-`GET /api/export/image?sessionId=…` 的输出 —— 也就是你在界面上点「导出」
-会拿到的同一张图，配色和半径算法与前端共用 `core/graph/palette.ts` 和
-`core/graph/geometry.ts`，所以图和界面永远长得一样。
+| 维度 | 功能特性 | 技术实现与优势 |
+| :--- | :--- | :--- |
+| **拓扑可视化** | **2D/3D 双模空间交互** | 2D 基于 Cytoscape + fcose 力导向，支持框选锁定与视口平滑复原；3D 基于 Three.js，具备太空粒子深空背景、动态能量光子流与 Billboard 文字。 |
+| | **实体分类与关系去乱** | 自动标注组织/高校、技术实现、模型产品、核心概念；语义关系边实线加粗 + 显式谓词标签，共现边虚线淡化；支持独立悬浮过滤条一键筛选。 |
+| | **10年时序分层拓扑** | 自动提取与拓扑推导节点发布年份，自适应收敛在最近 10 年，并在画布左上方直观渲染每年统计维度标尺。 |
+| **搜索与预筛** | **型号消歧与意图补搜** | 彻底解决含连字符的型号名（如 `DeepSeek-V4.1-Flash`）被拆成碎片 token 导致查询漂移的问题；支持多轮自动补搜。 |
+| | **精准体裁过滤闸门** | 关键词与结构化规则双重拦截招聘求职、招投标、二手售卖、个人动态流等噪音，避免垃圾数据污染图谱。 |
+| **抓取穿透** | **官方扫码安全登录** | 知乎、小红书官方登录页扫码登录，cookie 本地 `0600` 安全落盘，不逆向签名头、不触碰用户账密，零泄露风险。 |
+| | **平台通道深度定制** | B站视频/专栏原生接口直读；公众号补齐防盗链请求头；JS 渲染型站点按需唤起 Playwright 无头渲染。 |
+| **交付归档** | **多风格矢量与报告** | 提供默认、深色黑曜石、宣纸报告、高对比 4 种配色规范；一键导出结构化 Markdown 调研报告与高保真矢量 SVG。 |
+| | **离线异步下载** | 状态机并发下载队列，支持 HTTP Range 断点续传、原子写入（`.part` 机制）与低速看门狗重试。 |
 
-图上能看出几件事：
+---
 
-- **圆圈是概念，方块是资料**。方块刻意不上簇的颜色：一份资料「属于哪个簇」
-  本身就不成立，它跟每个方向都只是相关程度不同
-- **带箭头的实线是 LLM 给的带谓词的边**（「配套使用」而不是「一起出现过」），
-  虚线是统计共现，点线是「这篇资料提到了这个概念」
-- **几个大圆是这个词在这批语料里的分量**（TF-IDF 聚合后开方压缩）
-- **支持 4 套视觉风格即时切换**（默认暗调控制台 / 黑曜石深色 / 暖白宣纸报告 / 纯黑高对比投影），画布背景、边框粗细与色盘同源派生
+## 🛠️ 快速启动 (Getting Started)
 
-自己生成一张（需要一个已经建过拓扑的会话）：
+### 方式一：Docker 容器化部署（推荐，开箱即用）
+
+项目已内置完整的容器化编排支持，通过 `docker compose` 可一键启动包含 Next.js 前端与 SearXNG 聚合搜索的完整生产环境：
 
 ```bash
-pnpm example:image <sessionId>              # 默认写到 docs/topology-<id>.svg
-pnpm example:image <sessionId> --out docs/my.svg --style paper --no-docs # 导出宣纸质感图
+# 1. 克隆代码仓库
+git clone https://github.com/j0rGeT/muti-eye.git
+cd muti-eye
+
+# 2. 复制并按需配置环境变量（全部可留空，未配置的能力自动降级）
+cp .env.example .env.local
+
+# 3. 启动全套服务容器（包含 muti-eye 应用与 SearXNG 搜索后端）
+docker compose up -d
+
+# 4. 访问服务
+# 浏览器打开 http://localhost:3000
 ```
 
-## 快速开始
+> **服务端口映射说明**：
+> - `muti-eye 应用`：`http://localhost:3000`
+> - `SearXNG 搜索引擎`：`http://localhost:8888`
+> - 容器内运行健康检查：`docker compose ps`
+
+---
+
+### 方式二：本地开发部署
+
+**环境要求**：Node.js >= 20.0.0，pnpm / npm。
 
 ```bash
-pnpm install
+# 1. 安装项目依赖
+npm install
 
-# 1. 起 SearXNG（搜索层的默认后端，免 key）
-pnpm searxng:setup     # 首次：拉源码、建 venv、写入自定义 settings.yml
-pnpm searxng:up
+# 2. 初始化并启动 SearXNG 本地搜索后端（免 key，自动配置）
+npm run searxng:setup    # 首次：拉取源码、创建环境、注入 JSON 搜索支持
+npm run searxng:up       # 后台启动 SearXNG
 
-# 2. 起应用
-pnpm dev               # http://localhost:3000
+# 3. 启动开发服务器
+npm run dev
 ```
 
-打开页面后访问 `/api/health` 可以看到每一项依赖的实时状态：
+打开浏览器访问 `http://localhost:3000`，即可开始主题调研。通过 `/api/health` 接口可实时查看各搜索源与运行时状态：
 
 ```bash
-curl -s localhost:3000/api/health | jq '.checks[] | {id, ok, detail}'
+curl -s http://localhost:3000/api/health | jq '.checks[] | {id, ok, detail}'
 ```
 
-页面顶部的搜索框输入主题，勾选站点，依次点**搜索 → 抓取正文 → 构建知识拓扑**。
-每一步的产物都留在页面上，刷新后会自动接回上一次的会话。
+---
 
-## 验证
+## ⚙️ 环境变量配置说明 (Configuration)
 
-`examples/` 下有一个不依赖浏览器的全链路验证脚本 —— 把这五步走一遍并逐项断言：
+复制 `.env.example` 为 `.env.local`。**所有字段均可留空**，系统具备强大的弹性自适应能力，缺失项会自动优雅降级：
 
-```bash
-pnpm example                                 # 搜索 → 抓取 → 构图 → 导出 → 下载
-node examples/e2e.mjs --verbose --no-llm     # 想看每条流式事件、或跳过 LLM
-pnpm example:graph <sessionId>               # 拓扑：分簇、每簇 top 词、簇内边
-pnpm example:docs  <sessionId>               # 逐篇抓取结果与降级原因
-```
+| 环境变量 | 默认值 | 作用说明 |
+| :--- | :--- | :--- |
+| `SEARXNG_URL` | `http://localhost:8888` | 本地 SearXNG 搜索后端，完全免费无额度限制 |
+| `SERPER_API_KEY` | 空 | 商业 Google 搜索 API，配置后优先于 SearXNG，失败自动降级 |
+| `LLM_API_KEY` | 空 | 大语言模型密钥。**留空则走本地启发式构图**（jieba-wasm + TF-IDF） |
+| `LLM_BASE_URL` | `https://api.deepseek.com` | OpenAI 兼容协议端点（支持 DeepSeek、GLM、OpenAI、Ollama 等） |
+| `LLM_MODEL` | `deepseek-flash` | 构图模型名称（支持推理思考模型） |
+| `LLM_MAX_TOKENS` | `32768` | 模型最大上下文输出长度（保障长思维链不被截断） |
+| `FETCH_PROXY_URL` | `http://127.0.0.1:6666` | 抓取代理（**仅对境外站点生效**，国内站点自动直连） |
+| `PLAYWRIGHT_MODE` | `on-demand` | 无头浏览器策略：`off` / `on-demand` (仅空壳页) / `always` |
+| `SEARCH_DEPTH` | `3` | “整理 + 补搜”全局默认最大迭代深度（1~10 轮） |
+| `DOWNLOAD_CONCURRENCY` | `3` | 本地资源离线下载队列并发度 |
 
-它的重点不是「有没有报错」，而是**降级证据**：每个请求过的站点都有 provider
-记录、每次降级都写明了原因、下载的文件真的落在 `assets/` 下且非空。详见
-[examples/README.md](examples/README.md)。
+---
 
-## 配置
-
-复制 `.env.example` 为 `.env.local`（已被 `.gitignore` 覆盖），按需填写。**全部可留空** —— 缺失的能力会自动降级，不会崩溃。
-
-| 变量 | 默认 | 作用 |
-|---|---|---|
-| `SEARXNG_URL` | `http://localhost:8888` | 搜索层默认后端，免 key |
-| `SERPER_API_KEY` | 空 | 商业搜索 API，填了优先于 SearXNG，失败自动降级 |
-| `YTDLP_PATH` | 自动探测 | yt-dlp 可执行文件，用于 YouTube 搜索与字幕 |
-| `LLM_API_KEY` | 空 | 语义构图的密钥。空则走本地启发式路径 |
-| `LLM_BASE_URL` | `https://api.deepseek.com` | OpenAI 协议的端点 |
-| `LLM_MODEL` | `deepseek-flash` | 模型名 |
-| `LLM_MAX_TOKENS` | `32768` | 输出上限，见下方「推理模型」一节 |
-| `LLM_TIMEOUT_MS` | `300000` | 单次 LLM 请求超时 |
-| `FETCH_PROXY_URL` | `http://127.0.0.1:6666` | 抓取/下载走的代理（**只对境外站点生效**，国内站点自动直连） |
-| `PLAYWRIGHT_MODE` | `on-demand` | 无头浏览器降级：`off` / `on-demand`（仅 JS 空壳页）/ `always`（每篇都渲染） |
-| `PLAYWRIGHT_MAX_PAGES_PER_RUN` | `8` | 一轮抓取最多用几次无头浏览器，超额不静默丢弃 |
-| `FETCH_TIMEOUT_MS` / `FETCH_MAX_BYTES` | 15s / 5MB | 单页抓取的上限 |
-| `FETCH_MIN_TARGETS` | `8` | 质量过滤后至少保留的候选数，过严时自动补回低质链接 |
-| `SEARCH_PER_SITE_LIMIT` | `30` | 每站点候选上限，给过滤层留出余量 |
-| `SEARCH_ENOUGH_RESULTS` | `12` | 单站点拿到多少候选后停止补搜，可调低节省 Serper 费用 |
-| `SEARCH_QUERY_VARIANTS` | `5` | 每站点最多尝试的查询变体数，用于型号别名与关联技术词补搜 |
-| `SEARCH_DEPTH` | `3` | 抓取后“整理 + 补搜”全局默认最大轮次（1~10） |
-| `DOWNLOAD_CONCURRENCY` | `3` | 下载队列并发 |
-
-### LLM 构图是可选的
-
-不配 `LLM_API_KEY` 也完全可用：本地启发式路径（jieba 分词 + TF-IDF + 共现 + Louvain 社区发现）会顶上，`generatedBy` 标记为 `heuristic`。两条路径产出**同一个 `GraphModel`** —— 前端、导出、下载都不需要知道这次是谁构的图。
-
-配了 key 之后，LLM 路径做的是统计做不到的三件事：抽**实体**而不是词（「Mavic 3」不再被切成 Mavic + 3）、给出**带谓词的边**（「配套使用」而不是「一起出现过」）、以及**能直接当章节标题的簇名**加一句话综述。
-
-任何失败（限流 / 超时 / key 无效 / 返回的 JSON 不合形状）都会**自动降级回启发式**，并把分类过的原因写进 `stats.llmFallbackReason`，界面上以「已降级」徽标呈现 —— 你拿到的一定是一张图，但你会知道这张是统计图。
-
-**推理模型注意**：`deepseek-flash` 会先输出思维链，思维链和正文共享 `max_tokens`。额度给小了会出现「正文为空、`finish_reason=length`」这种看起来像模型哑了的现象。默认给到 32768 就是为了这个。
-
-## 它是怎么拿到内容的
-
-### 搜索层：搜索引擎发现 + 域名归属过滤，不碰平台鉴权
-
-各平台的开放接口要么没有（知乎、小红书），要么按量计费（X）、要么免费额度只够每天 100 次（YouTube）。所以这里走的是**搜索引擎做发现层 + 站点适配器做深挖**：先用搜索引擎发现候选，再按域名归属过滤，**不需要碰任何平台的签名算法**。
-
-对 `DeepSeek-V4.1-Flash` 这类型号名，搜索层不会只发一条长查询：查询分析会保留用户原词，同时生成模型别名、短查询和 `KVCache` 等关联技术词的候选查询，在结果不足时逐条补搜。这样知乎等站点不会因为连字符拆词或查询过长而整栏为空；最终仍按用户意图的关联度排序。
-
-唯一一处例外是知乎的登录态，见下面「知乎登录态」一节。
-
-`SearchProvider` 适配器按链降级：`Serper? → SearXNG → yt-dlp（YouTube 专用）`。
-
-关键词之外还可以填写**用户意图提示**。它会原样进入查询分析、查询改写和相关性判定；
-例如搜 `DeepSeek-V4-Flash` 时填“关注推理阶段的 KVCache 与显存优化”，分析会提取
-`KVCache` 等关联词，用 OR 扩展检索，再按与意图的关联度排序。关联度只表示“贴不贴题”，
-不表示内容质量或可信度。
-
-### 抓取层：先分派「视频还是图文」，再分级降级
-
-第一步是**按 URL 路径**判类型（`src/core/kind.ts`），而不是按站点 —— 因为 B 站的专栏（`/read/`）和图文（`/opus/`）抓到的是**真正文**，按站点判会把它们当成视频，于是去给一篇没有播放器的文章找字幕、排媒体下载、并放进包里的 `视频/`。
-
-| 分派 | 级别 | 手段 | 适用 |
-|---|---|---|---|
-| 视频 | 1 | yt-dlp 字幕 | YouTube —— 视频的「正文」就是字幕 |
-| 视频 | 2 | B站公开接口 | B站视频：标题 / UP主 / 分区 / 标签 / 简介 / 字幕 |
-| 图文 | 3 | B站公开接口 | B站专栏 `/read/`、图文 `/opus/` |
-| 图文 | 4 | HTTP + Readability | 大部分博客、新闻、专栏 |
-| 图文 | 5 | Playwright 无头浏览器 | JS 空壳站点（需 `PLAYWRIGHT_MODE=on-demand`，且已 `npx playwright install chromium`） |
-| 共同 | 6 | 兜底 | 退化为搜索摘要，`extractMethod: "raw"` |
-
-类型判据是 `site + url` 的纯函数，**不读落库的 `kind` 字段**（那只是抓取那一刻的快照，判据一改就过期）。凡是要据此做决定的地方都走 `docKind()` 现算。
-
-**单篇失败不抛异常**，只产出带 `error` 的 Document —— 一个主题下几十篇资料，其中几篇抓不到是常态（站点下线、反爬拦截、内容被删），不该让整批失败。
-
-抓取前还有一层**质量闸门**：导航页、登录页、验证码页、空标题等明显无用候选先被挡掉，
-候选不足时按排名补回低质链接，避免“全部过滤、整轮空跑”。抓取后仍由 `bodyGrade`
-区分完整正文、短文和只有摘要的退化结果，界面会把跳过数量说清楚。
-
-两条站点专用通道值得单说，因为**页面抓取在这两家产出的是垃圾而不是内容**：
-
-- **YouTube**：观看页 HTML 里没有正文，只有 `var ytInitialPlayerResponse = {...}`。Readability 会把它当正文抓出几万字的 JS 源码，比抓不到还糟。
-- **B站**：页面抓出来的是站内导航 + 侧栏的「接下来播放」推荐列表 —— 一千多字里没有一个是这个视频的内容，而几十篇这样的资料叠在一起，TF-IDF 里「首页/番剧/会员购/点赞」的权重会高到离谱。
-
-知乎另有专用正文容器提取：优先取 `.RichContent-inner` / `.QuestionAnswer-content` /
-`.Post-RichText` 中最长的真实正文，剔除操作按钮与评论区；正文过短时强制走带登录态的
-Playwright，并将知乎抓取并发限制为 1，避免风控把整批请求打成 412/403。
-
-B站通道走 `api.bilibili.com` 的公开接口，**不需要登录、不需要签名**（wbi 签名是给播放地址那类接口用的，元数据接口不用）。它返回的是视频自己的东西；视频被删除时也会明确告诉你 `code=62002 稿件不可见`，而不是给你一段别人的视频标题。
-
-## 知乎登录态（唯一的例外，可选）
-
-知乎对**未登录的游客**一律返回 403，于是它的正文默认只能拿到搜索摘要 —— 这是全部失败里
-数量最大的一类，也是唯一一类**用户自己动手就能消掉**的。所以界面上给了一个入口：搜索面板里
-勾了知乎就会出现「知乎账号」那一栏，点「扫码登录」会用 Playwright 在你**这台机器上开一个
-真实浏览器窗口**，用知乎 App 扫码即可。
-
-这和「不碰登录态」的边界是这样划的：
-
-| | |
-|---|---|
-| ✅ 做 | 打开**知乎自己的**登录页，你自己扫码。抓的是**公开页面**，只是带上了你登录后本来就有的 cookie |
-| ❌ 不做 | 账号密码登录（密码要经过我们的进程，那是个完全不该存在的风险面） |
-| ❌ 不做 | CDP 复用你日常 Chrome 的登录态（那会拿到你全部身份，远超「读知乎正文」所需） |
-| ❌ 不做 | **逆向 `x-zse-93` / `x-zse-96` 那套签名算法** —— 这条一个字节都没动，`examples/e2e.mjs` 里钉住了 |
-
-cookie 落在 `data/auth/zhihu.json`（`0600`），`data/auth/` 在 `.gitignore` 里被显式挡住。
-抓取时只有 `fetch/http.ts` 与 `fetch/playwright.ts` 会带上它，而且只发给 `zhihu.com` 及其子域
-（`core/auth/cookies.ts` 的 `accountSiteFor()` —— 反例包括 `zhihu.com.evil.com`、`zhihu.com@evil.com`）。
-**任何接口都不会返回 cookie 的值**：状态接口过的是 `publicAccount()`，那个类型结构性地没有
-cookie 字段（e2e 里用一个哨兵值钉住这一条）。随时点「退出登录」，那是**真删文件**。
-
-> ⚠️ 用**你自己的账号**读公开页面，频繁抓取有封号风险 —— 这是使用这个功能的代价，用之前请想清楚。
-> 不登录完全不影响其余功能。
-
-## 目录结构
+## 📂 项目结构指南 (Codebase Structure)
 
 ```
 src/
 ├─ app/
-│  ├─ page.tsx                主界面：搜索 → 抓取 → 构图 → 下载
-│  ├─ globals.css
-│  └─ api/
-│     ├─ health/route.ts      各依赖可用性 + 修复建议
-│     ├─ search/route.ts      POST 主题 → SSE 流式回传搜索结果
-│     ├─ fetch/route.ts       POST → SSE 逐篇回传正文
-│     ├─ graph/route.ts       POST 结果集 → GraphModel
-│     ├─ export/route.ts      GET → report.md
-│     ├─ export/image/route.ts GET → 拓扑图 SVG
-│     ├─ download/route.ts    POST 建任务 / GET SSE 进度
-│     ├─ session/route.ts     GET 取回会话 / POST 存图的布局（刷新页面后接着用）
-│     └─ auth/zhihu/route.ts  GET 登录状态 / POST 扫码（SSE）/ DELETE 退出（真删文件）
-├─ core/
-│  ├─ types.ts                ★ 全局契约，其余模块都围绕它编程
-│  ├─ env.ts                  配置与可用性探测
-│  ├─ store.ts                会话落盘（文件系统，无数据库）
-│  ├─ limit.ts                并发闸 + 退避重试
-│  ├─ auth/                   cookies（域判据 + 拼头，零依赖）/ store（落盘）/ zhihu（扫码）
-│  ├─ search/                 provider / searxng / serper / ytdlp / sites
-│  ├─ fetch/                  extract（降级链）/ http / agent（代理）/ readability
-│  │                          / playwright / youtube / bilibili
-│  │                          / limitations（已知站点限制的翻译规则）
-│  ├─ graph/                  build（统一入口）/ heuristic / llm / tokenize / communities
-│  │                          / palette（配色唯一来源）/ geometry（尺寸唯一来源）
-│  ├─ export/                 markdown.ts（报告）/ svg.ts（拓扑图）
-│  └─ download/               queue（状态机）/ kinds（各类资源的下载器）
-└─ components/
-   ├─ graph/                  GraphView / GraphToolbar / GraphTooltip / GraphLegend
-   └─ SearchPanel / NodeDetail / DownloadPanel / FeedPanel / ZhihuLogin / postSse
-
-examples/
-├─ e2e.mjs                    全链路验证：断言的 8 步
-├─ show.mjs                   读会话产物，在终端里看拓扑/抓取质量/报告
-├─ graph-image.mjs            调导出接口，把拓扑图写成 SVG
-└─ README.md                  验证什么、怎么判定「降级」和「失败」
-
-docs/topology-example.svg     README 里那张示例图（由真实会话生成，可复现）
-
-data/sessions/<id>/           运行时产物（gitignore）
-├─ session.json               主题、结果、正文、图
-├─ report.md                  导出的报告
-└─ assets/                    下载的资料（含 .done 完成标记）
+│  ├─ page.tsx                     主应用单页：全流程搜索、抓取、图谱与下载编排
+│  ├─ globals.css                  全局样式、极简工具条与主题色定义
+│  └─ api/                         Next.js App Router 生产级接口
+│     ├─ health/route.ts           系统依赖探活与修复引导
+│     ├─ search/route.ts           主题查询规划与 SSE 流式搜索扇出
+│     ├─ fetch/route.ts            逐篇正文抓取、清洗与质量过滤
+│     ├─ graph/route.ts            启发式与 LLM 双轨知识拓扑构建
+│     ├─ export/image/route.ts     纯 SVG 矢量拓扑大图渲染与导出
+│     ├─ session/route.ts          会话快照与视图状态（坐标/锁定/过滤）持久化
+│     └─ auth/                     知乎、小红书等官方安全扫码登录接口
+├─ core/                           核心业务引擎（框架无关，严格契约）
+│  ├─ types.ts                     ★ 全局数据契约（GraphModel / Session / SearchPlan 等）
+│  ├─ paths.ts                     系统持久化路径定义（纯文件存储）
+│  ├─ search/                      搜索提供方适配层（SearXNG / Serper / 站点语法）
+│  ├─ fetch/                       正文抽取流水线、反爬穿透、站点限制规避
+│  ├─ graph/                       构图管道、实体类型推导、社区发现、配色与几何规范
+│  └─ download/                    并发下载任务状态机、断点续传与原子落盘
+├─ components/
+│  ├─ graph/                       GraphView(2D) / GraphView3D / GraphFilterBar / GraphToolbar
+│  └─ search/                      SearchPanel / NodeDetail / DownloadPanel / TrendChart
+Dockerfile                         Next.js 16 多阶段轻量生产镜像构建
+docker-compose.yml                 全套服务（应用 + 搜索引擎）容器化编排
 ```
 
-**核心设计原则**：所有模块围绕 `src/core/types.ts` 里的契约编程。搜索层、抓取层、图构建层各自可独立替换，前端只认 `GraphModel`。这也是启发式与 LLM 两条路径能无缝共存的原因。
+---
 
-## 下载
+## 🔒 明确边界与安全原则 (Security & Non-goals)
 
-抓取到的文章可在结果列表或拓扑详情中点击打开**本地 Markdown 预览**；视频会优先读取
-`data/sessions/<id>/assets/*.media/` 里已下载的文件，没有本地文件时才回退到
-YouTube/B 站官方播放器，无法安全内嵌的站点会显示封面并保留原文链接。
+- **不逆向任何商业站点的加密风控算法**：不逆向知乎 `x-zse-*`、小红书 `x-s` 或 B站 wbi 密钥，遵循合规爬取原则。
+- **不收集或转存用户凭据**：扫码登录仅获取浏览器标准公开 cookie 并经 `0600` 本地单机隔离保存，不实现任何账号密码中间人代理。
+- **纯本地数据主权**：无需外部 MySQL/Redis，单机会话目录结构清晰，调研成果随时整体打包或删除。
 
-抓取完成后可以点「智能整理并补搜」：先由 LLM 从正文里整理分类、缺口和新的短查询，
-再走一次既有的搜索、相关性判定和质量闸门，把新增候选并回当前会话。默认最多三轮，
-每轮都保留原始结果与整理摘要，不会无限自动循环。
+---
 
-抓取完成后，左栏还会列出「已抓取资料」，每一条都能直接打开本地预览。拓扑图中的
-资料节点单击查看关联，双击直接打开资料详情；概念节点会显示共现关系与 LLM 识别出的
-关系谓词，右栏的支撑资料列表会带出摘要，方便不跳转原文先判断内容。
+## 📄 开源许可证 (License)
 
-`queue.ts` 是一个带状态机的并发队列，任务落盘在 `data/sessions/<id>/tasks.json`：
-
-- **进程重启能续跑**，已完成的任务按文件存在性跳过（目录类任务看 `.done` 标记）
-- **断点续传**：HTTP Range，206 就接着写，200 就从头来
-- **原子落盘**：先写 `.part` 再 rename，中途断掉不会留下半个文件
-- **低速看门狗**：60 秒内不足 8 KB 就掐断并重试 —— 实测遇到过一个 275 B/s 的挂死连接，没有看门狗它会一直挂着
-- **暂停 / 继续 / 取消 / 重试**，进度经 SSE 推给前端
-
-下载任务在服务端自己跑，与浏览器无关。刷新页面后前端会从 `localStorage` 取回上次的会话 id，重新接上那个任务。
-
-**只重抓失败和低质的**：一批资料抓完，通常有几篇只有摘要（正文不足 300 字，或抓取时报了错）。
-下载面板上那个按钮会把**只有这几篇**重新抓一遍，而不是把整批重跑 —— 走的是 `/api/fetch` 的
-`resultIds` 显式点名路径，点名的那几条不再做相关性筛选（用户自己的意图优先于自动判断）。
-重抓只会补齐，不会让已经拿到完整正文的篇数下降（`examples/e2e.mjs` 第 9 步钉住这一条）。
-
-## 明确不做
-
-- **不逆向任何站点的签名算法**（知乎 `x-zse-*`、小红书 `x-s`、B站 wbi）—— 合规风险不可控
-- 不做账号密码登录，不 CDP 复用你日常浏览器的登录态。知乎扫码是**唯一的例外**，边界与代价见上面「知乎登录态」一节
-- 不做用户系统、数据库（文件系统存会话够了）
-- 不做分布式/多机 —— 单机个人工具
-
-## 已知限制
-
-这一节说的每一件事，**在报告和下载包里都会自己说出来**：报告的「站点抓取局限」一节列出本次
-受限的站点和原因，`未收录.md` 把这一类排在最前面并标注「不是故障」。翻译规则在
-`src/core/fetch/limitations.ts` —— 只有**站点 + 特征同时命中**才认，认不出的（B站 500、
-知乎超时）一律保留原始错误，不粉饰成平台限制。
-
-| 现象 | 原因 |
-|---|---|
-| 知乎返回 403 | 未登录的游客访问被拦。直连和走代理都一样，不是代理问题。**这条可以自己消掉**：在「知乎账号」里扫码登录一次，见上面那一节。登录之后仍 403，说明登录态过期了，重新扫 |
-| 微信公众号正文为空 / 验证码 | 微信对非客户端流量下发环境异常验证码，或返回无正文壳页。已自动补头缓解并翻译为平台限制 |
-| 小红书、X 搜索结果为空 | 站内内容不被搜索引擎索引 |
-| B站视频只有标题和标签 | 该视频没有 CC 字幕、简介也是空的。接口已尽力，比拿推荐列表冒充正文诚实 |
-| B站下载报 No video formats found | 短时间高频访问或特定视频触发了 B 站人机风控凭据（v_voucher）。冷却后或稍后重试即可恢复 |
-| 覆盖率不高的中文长尾站点 | 没装 Playwright 时只能拿到静态 HTML。`/api/health` 会区分「已关闭」和「已启用但未安装」——两者都不是故障，是配置 |
-| 一篇 SPA 站点没被渲染 | 本轮的无头浏览器配额（默认 8 页）用完了。这一条会写进该篇的 `error`，不会静默降级 |
-
-## 常用命令
-
-```bash
-pnpm dev            # 开发服务器
-pnpm build          # 生产构建
-pnpm typecheck      # tsc --noEmit
-pnpm desktop        # 构建后启动 Electron 桌面壳
-pnpm desktop:dev    # Electron 连接本地开发/未构建服务
-pnpm desktop:pack   # 生成 release/ 下的桌面安装包
-
-pnpm example        # 全链路验证（需 dev 已启动）
-pnpm example:graph  # 看某次会话的拓扑
-pnpm example:docs   # 看某次会话的抓取质量
-pnpm example:report # 看某次会话的 Markdown 报告
-pnpm example:image  # 把某次会话的拓扑导出成 SVG
-
-pnpm searxng:setup  # 首次安装 SearXNG（源码 + venv + settings）
-pnpm searxng:up     # 启动
-pnpm searxng:down   # 停止
-pnpm searxng:status # 状态
-pnpm searxng:logs   # 日志
-pnpm searxng:docker # 或改用 docker compose
-
-pnpm ytdlp:fetch    # 下载 yt-dlp 单文件二进制到 bin/
-```
+本项目采用 [MIT License](LICENSE) 协议开源。欢迎提交 Issue 与 Pull Request 共同完善！

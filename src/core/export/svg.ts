@@ -26,6 +26,7 @@ import fcose from "cytoscape-fcose";
 import type { GraphModel } from "../types";
 import {
   clusterIndexMap,
+  entityTypeColor,
   getGraphTheme,
   resolveGraphStyle,
   type GraphStyleKey,
@@ -367,11 +368,17 @@ export function renderTopologySvg(
       n.kind === "document"
         ? theme.docFill
         : theme.getClusterColor(clusterIndex.get(n.clusterId) ?? 0);
-    const stroke = n.kind === "document" ? theme.docBorder : theme.conceptBorder;
+    const typeStroke = n.kind !== "document" ? entityTypeColor(n.type) : undefined;
+    const stroke =
+      n.kind === "document"
+        ? theme.docBorder
+        : (typeStroke ?? theme.conceptBorder);
     const strokeW =
       n.kind === "document"
         ? (theme.docBorderWidth * scale).toFixed(2)
-        : (theme.conceptBorderWidth * scale).toFixed(2);
+        : typeStroke
+          ? (2.2 * scale).toFixed(2)
+          : (theme.conceptBorderWidth * scale).toFixed(2);
     const fillOpacity =
       n.kind === "document" ? theme.docFillOpacity : theme.conceptFillOpacity;
 

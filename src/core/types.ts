@@ -498,6 +498,10 @@ export interface SessionViewState {
   layoutMode?: "free" | "yearly";
   /** 是否展示拓扑图下方的节点时间趋势折线图。 */
   showTimeline?: boolean;
+  /** 隐藏哪些节点类型（如 "组织"、"技术" 等）。空数组/未设置为全显。 */
+  hiddenNodeTypes?: string[];
+  /** 隐藏哪些边类型（如 "cooccur"、"contains"）。空数组/未设置为全显。 */
+  hiddenEdgeKinds?: EdgeKind[];
 }
 
 /**

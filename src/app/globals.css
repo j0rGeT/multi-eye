@@ -612,6 +612,106 @@ pre {
   color: var(--fg-muted);
 }
 
+/* ── 拓扑图节点与关系类型过滤器 ── */
+
+.gfilter-bar {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  max-width: calc(100% - 320px);
+  background: rgba(13, 17, 23, 0.88);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  backdrop-filter: blur(6px);
+  font-size: 11px;
+}
+
+.gfilter-section {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.gfilter-title {
+  color: var(--fg-muted);
+  font-size: 10px;
+  font-weight: 500;
+  margin-right: 2px;
+  user-select: none;
+}
+
+.gfilter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  font-size: 11px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  transition: all 0.12s ease;
+  cursor: pointer;
+}
+
+.gfilter-chip:hover {
+  background: #262c36;
+  color: var(--fg);
+}
+
+.gfilter-chip.on {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.15);
+  color: var(--fg);
+}
+
+.gfilter-chip.off {
+  opacity: 0.38;
+  text-decoration: line-through;
+}
+
+.gfilter-chip.highlight-chip {
+  color: var(--accent);
+  border-color: rgba(88, 166, 255, 0.3);
+  background: rgba(88, 166, 255, 0.08);
+  font-weight: 500;
+}
+
+.gfilter-chip.highlight-chip.on {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+.gfilter-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.gfilter-count {
+  font-size: 9px;
+  color: var(--fg-muted);
+  opacity: 0.75;
+}
+
+.gfilter-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--border-subtle);
+  margin: 0 4px;
+}
+
 /* ── 图例 ── */
 
 .glegend {

@@ -1,0 +1,14 @@
+node_modules
+.next
+.git
+.DS_Store
+data/sessions
+data/auth
+dist
+release
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.searxng
